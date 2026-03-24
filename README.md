@@ -38,6 +38,18 @@ The renderer scales each sprite to ~45% of its original dimensions to fit cells.
 export DISCORD_BOT_TOKEN="your-token-here"
 ```
 
+On Windows PowerShell:
+
+```powershell
+$env:DISCORD_BOT_TOKEN="your-token-here"
+```
+
+Or create a local `.env` file in the project root:
+
+```dotenv
+DISCORD_BOT_TOKEN=your-token-here
+```
+
 4. Run:
 
 ```bash
@@ -48,3 +60,38 @@ python bot.py
 
 - Grid boundaries are enforced (units cannot move outside `1A`..`12L`).
 - If any sprite is missing, a fallback colored token is drawn in that tile.
+
+
+## Troubleshooting
+
+### `ModuleNotFoundError: No module named "PIL"`
+
+`PIL` comes from the **Pillow** package. If you see this error, install dependencies with the same Python interpreter you use to run the bot:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+On Windows, if `python` points to a different interpreter, try:
+
+```powershell
+py -m pip install -r requirements.txt
+py bot.py
+```
+
+You can verify Pillow is installed for the active interpreter with:
+
+```bash
+python -m pip show Pillow
+```
+
+### `RuntimeError: Set DISCORD_BOT_TOKEN in your environment...`
+
+This means the bot cannot find your Discord token.
+
+Use one of these approaches before running the bot:
+
+- Set it in your shell session:
+  - **macOS/Linux:** `export DISCORD_BOT_TOKEN="your-token-here"`
+  - **PowerShell:** `$env:DISCORD_BOT_TOKEN="your-token-here"`
+- Or create `.env` in the project root with `DISCORD_BOT_TOKEN=your-token-here`.
