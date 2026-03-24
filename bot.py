@@ -1,8 +1,9 @@
 import asyncio
 import os
+import random
 from dataclasses import dataclass, field
 from io import BytesIO
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Literal, Optional, Set, Tuple
 
 import discord
 from discord import app_commands
@@ -49,6 +50,7 @@ class Unit:
 class BattleState:
     players: Dict[str, Unit]
     enemies: Dict[str, Unit]
+    phase: Literal["player", "enemy"] = "player"
     moved_this_turn: Set[str] = field(default_factory=set)
 
 
@@ -139,6 +141,17 @@ def move_coord(coord: str, direction: str) -> str:
     return xy_to_coord(row, col)
 
 
+def occupied_coords(state: BattleState, *, ignore_player: Optional[str] = None, ignore_enemy: Optional[str] = None) -> Set[str]:
+    occupied: Set[str] = set()
+    for player in state.players.values():
+        if player.name != ignore_player:
+            occupied.add(player.coord)
+    for enemy in state.enemies.values():
+        if enemy.name != ignore_enemy:
+            occupied.add(enemy.coord)
+    return occupied
+
+
 def create_base_grid() -> Image.Image:
     side = GRID_SIZE * CELL_SIZE + GRID_LINE_WIDTH
     img = Image.new("RGBA", (side, side), BOARD_BG)
@@ -201,11 +214,16 @@ def render_battle_map(state: BattleState) -> BytesIO:
 
 def state_summary(state: BattleState) -> str:
     moved = ", ".join(sorted(state.moved_this_turn)) if state.moved_this_turn else "None"
+    phase_label = "Player Phase" if state.phase == "player" else "Enemy Phase"
     player_lines = [f"- **{u.name}** ({u.klass}) at `{u.coord}`" for u in state.players.values()]
+    enemy_lines = [f"- **{u.name}** ({u.klass}) at `{u.coord}`" for u in state.enemies.values()]
     return "\n".join([
+        f"## {phase_label}",
         "### Player Units",
         *player_lines,
-        f"\nMoved this turn: **{moved}**",
+        "\n### Enemy Units",
+        *enemy_lines,
+        f"\nMoved this phase: **{moved}**",
     ])
 
 
@@ -217,6 +235,54 @@ async def refresh_battle_message(interaction: discord.Interaction, state: Battle
     await message.edit(embed=embed, attachments=[file], view=BattleView(interaction.client, state, message.id))
 
 
+async def send_phase_transition(channel: discord.abc.Messageable, phase: Literal["player", "enemy"]) -> None:
+    is_player = phase == "player"
+    title = "PLAYER PHASE" if is_player else "ENEMY PHASE"
+    color = 0x2E86FF if is_player else 0xD63031
+    embed = discord.Embed(title=title, color=color)
+    await channel.send(embed=embed)
+
+
+def find_enemy_move_destination(state: BattleState, enemy_name: str) -> str:
+    enemy = state.enemies[enemy_name]
+    current = enemy.coord
+    blocked = occupied_coords(state, ignore_enemy=enemy_name)
+    directions = ["up", "down", "left", "right"]
+    for _ in range(enemy.stats.mov):
+        random.shuffle(directions)
+        next_coord = None
+        for direction in directions:
+            candidate = move_coord(current, direction)
+            if candidate == current or candidate in blocked:
+                continue
+            next_coord = candidate
+            break
+        if next_coord is None:
+            break
+        current = next_coord
+        blocked.add(current)
+    return current
+
+
+async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, battle_message: discord.Message) -> None:
+    state.phase = "enemy"
+    state.moved_this_turn.clear()
+    await send_phase_transition(battle_message.channel, "enemy")
+    await refresh_battle_message(interaction, state, battle_message)
+
+    for enemy_name in state.enemies:
+        destination = find_enemy_move_destination(state, enemy_name)
+        state.enemies[enemy_name].coord = destination
+        state.moved_this_turn.add(enemy_name)
+        await refresh_battle_message(interaction, state, battle_message)
+        await asyncio.sleep(0.4)
+
+    state.phase = "player"
+    state.moved_this_turn.clear()
+    await send_phase_transition(battle_message.channel, "player")
+    await refresh_battle_message(interaction, state, battle_message)
+
+
 class DirectionView(discord.ui.View):
     def __init__(self, client: FireEmblemBot, state: BattleState, unit_name: str, battle_message_id: int):
         super().__init__(timeout=300)
@@ -224,14 +290,40 @@ class DirectionView(discord.ui.View):
         self.state = state
         self.unit_name = unit_name
         self.battle_message_id = battle_message_id
-        self.preview_coord = state.players[unit_name].coord
+        self.start_coord = state.players[unit_name].coord
+        self.preview_coord = self.start_coord
+        self.steps_taken = 0
+
+    @property
+    def movement_cap(self) -> int:
+        return self.state.players[self.unit_name].stats.mov
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
 
     async def _shift(self, interaction: discord.Interaction, direction: str) -> None:
-        self.preview_coord = move_coord(self.preview_coord, direction)
-        await interaction.response.edit_message(content=f"{self.unit_name} preview position: `{self.preview_coord}`", view=self)
+        if self.steps_taken >= self.movement_cap:
+            await interaction.response.send_message(
+                f"{self.unit_name} has reached max movement ({self.movement_cap}). Confirm or keep current tile.",
+                ephemeral=True,
+            )
+            return
+
+        candidate = move_coord(self.preview_coord, direction)
+        blocked = occupied_coords(self.state, ignore_player=self.unit_name)
+        if candidate == self.preview_coord or candidate in blocked:
+            await interaction.response.send_message("That tile is blocked.", ephemeral=True)
+            return
+
+        self.preview_coord = candidate
+        self.steps_taken += 1
+        await interaction.response.edit_message(
+            content=(
+                f"{self.unit_name} preview position: `{self.preview_coord}` "
+                f"({self.steps_taken}/{self.movement_cap} mov)"
+            ),
+            view=self,
+        )
 
     @discord.ui.button(label="Left", style=discord.ButtonStyle.secondary)
     async def left(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -254,9 +346,12 @@ class DirectionView(discord.ui.View):
         self.state.players[self.unit_name].coord = self.preview_coord
         self.state.moved_this_turn.add(self.unit_name)
 
+        await interaction.response.edit_message(content=f"Confirmed {self.unit_name} to `{self.preview_coord}`.", view=None)
         battle_message = await interaction.channel.fetch_message(self.battle_message_id)
         await refresh_battle_message(interaction, self.state, battle_message)
-        await interaction.response.edit_message(content=f"Confirmed {self.unit_name} to `{self.preview_coord}`.", view=None)
+        if self.state.phase == "player" and len(self.state.moved_this_turn) == len(self.state.players):
+            await interaction.followup.send("All player units acted. Ending Player Phase.", ephemeral=True)
+            await run_enemy_phase(interaction, self.state, battle_message)
 
 
 class PickUnitView(discord.ui.View):
@@ -293,15 +388,44 @@ class BattleView(discord.ui.View):
 
     @discord.ui.button(label="Move", style=discord.ButtonStyle.primary)
     async def move(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if self.state.phase != "player":
+            await interaction.response.send_message("You can only move units during Player Phase.", ephemeral=True)
+            return
         available = [u.name for u in self.state.players.values() if u.name not in self.state.moved_this_turn]
         if not available:
-            await interaction.response.send_message(
-                "All ally units have moved. Ally phase end trigger can be added next.", ephemeral=True
-            )
+            await interaction.response.send_message("All player units have already acted this phase.", ephemeral=True)
             return
 
         picker = PickUnitView(self.client, self.state, self.battle_message_id)
         await interaction.response.send_message("Pick a unit to move:", view=picker, ephemeral=True)
+
+    @discord.ui.button(label="End", style=discord.ButtonStyle.danger)
+    async def end_phase(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if self.state.phase != "player":
+            await interaction.response.send_message("You can only end phase during Player Phase.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "End Player Phase now?",
+            view=EndPhaseConfirmView(self.state, self.battle_message_id),
+            ephemeral=True,
+        )
+
+
+class EndPhaseConfirmView(discord.ui.View):
+    def __init__(self, state: BattleState, battle_message_id: int):
+        super().__init__(timeout=120)
+        self.state = state
+        self.battle_message_id = battle_message_id
+
+    @discord.ui.button(label="Confirm End", style=discord.ButtonStyle.danger)
+    async def confirm_end(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        battle_message = await interaction.channel.fetch_message(self.battle_message_id)
+        await interaction.response.edit_message(content="Ending Player Phase.", view=None)
+        await run_enemy_phase(interaction, self.state, battle_message)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel_end(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="Phase end cancelled.", view=None)
 
 
 @app_commands.command(name="battle", description="Start a Fire Emblem style battle prototype.")
@@ -325,6 +449,7 @@ async def battle(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(embed=embed, file=file, view=BattleView(client, state, 0))
     message = await interaction.original_response()
     await message.edit(view=BattleView(client, state, message.id))
+    await send_phase_transition(interaction.channel, "player")
 
 
 def main() -> None:
