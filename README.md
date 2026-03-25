@@ -23,12 +23,14 @@ This repo now includes a `/battle` slash command prototype for Discord that:
 python -m pip install -r requirements.txt
 ```
 
-2. Add player sprite images (the 4 images you provided) to `assets/` with these exact names:
+2. Player sprite images are bundled in source as embedded defaults for:
 
-- `assets/alear.png`
-- `assets/vander.png`
-- `assets/clanne.png`
-- `assets/framme.png`
+- `alear.png`
+- `vander.png`
+- `clanne.png`
+- `framme.png`
+
+If you place files with those names in `assets/`, local files override the embedded defaults.
 
 The renderer scales each sprite to ~45% of its original dimensions to fit cells.
 

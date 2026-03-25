@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 import random
 from dataclasses import dataclass, field
@@ -8,6 +9,8 @@ from typing import Dict, List, Literal, Optional, Set, Tuple
 import discord
 from discord import app_commands
 from PIL import Image, ImageDraw
+
+from embedded_assets import EMBEDDED_PLAYER_SPRITES
 
 # 12x12 map with A-L columns and 1-12 rows.
 GRID_COLUMNS = [chr(ord("A") + i) for i in range(12)]
@@ -20,6 +23,7 @@ GRID_COLOR = (0, 0, 0, 255)
 
 ASSET_DIR = "assets"
 IMAGE_SCALE = 0.45
+_EMBEDDED_SPRITE_CACHE: Dict[str, Image.Image] = {}
 
 
 @dataclass
@@ -258,10 +262,19 @@ def cell_origin(coord: str) -> Tuple[int, int]:
 
 def load_and_scale_sprite(filename: str) -> Optional[Image.Image]:
     path = os.path.join(ASSET_DIR, filename)
-    if not os.path.exists(path):
-        return None
+    sprite: Optional[Image.Image] = None
 
-    sprite = Image.open(path).convert("RGBA")
+    if os.path.exists(path):
+        sprite = Image.open(path).convert("RGBA")
+    else:
+        encoded = EMBEDDED_PLAYER_SPRITES.get(filename)
+        if encoded is None:
+            return None
+        if filename not in _EMBEDDED_SPRITE_CACHE:
+            raw = base64.b64decode("".join(encoded))
+            _EMBEDDED_SPRITE_CACHE[filename] = Image.open(BytesIO(raw)).convert("RGBA")
+        sprite = _EMBEDDED_SPRITE_CACHE[filename]
+
     target_w = max(1, int(sprite.width * IMAGE_SCALE))
     target_h = max(1, int(sprite.height * IMAGE_SCALE))
     return sprite.resize((target_w, target_h), Image.Resampling.LANCZOS)
