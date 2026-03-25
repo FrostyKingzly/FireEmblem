@@ -80,6 +80,7 @@ class BattleState:
     moved_this_turn: Set[str] = field(default_factory=set)
     active_battle_message_id: Optional[int] = None
     provoked_enemies: Set[str] = field(default_factory=set)
+    battle_over: bool = False
 
 
 IRON_SWORD = Weapon(name="Iron Sword", might=5, hit=90, crit=0, weight=5, rng_min=1, rng_max=1)
@@ -308,6 +309,33 @@ def state_summary(state: BattleState) -> str:
     ])
 
 
+def phase_banner_embed(phase: Literal["player", "enemy"]) -> discord.Embed:
+    if phase == "player":
+        return discord.Embed(title="PLAYER PHASE", color=0x1D82B6)
+    return discord.Embed(title="ENEMY PHASE", color=0xC0392B)
+
+
+def battle_result_embed(victory: bool) -> discord.Embed:
+    if victory:
+        return discord.Embed(title="VICTORY!", description="Win Condition Met: **Route the Enemy**", color=0x1D82B6)
+    return discord.Embed(title="DEFEAT...", description="Loss Condition Met: **Lose All Units**", color=0xC0392B)
+
+
+async def check_and_finalize_battle(interaction: discord.Interaction, state: BattleState) -> bool:
+    if state.battle_over:
+        return True
+
+    victory = len(state.enemies) == 0
+    defeat = len(state.players) == 0
+    if not victory and not defeat:
+        return False
+
+    state.battle_over = True
+    await lock_battle_message(interaction, state.active_battle_message_id)
+    await interaction.channel.send(embed=battle_result_embed(victory))
+    return True
+
+
 async def refresh_battle_message(interaction: discord.Interaction, state: BattleState, message: discord.Message) -> None:
     img = render_battle_map(state)
     file = discord.File(img, filename="battle_map.png")
@@ -411,11 +439,12 @@ def resolve_combat_round(attacker: Unit, defender: Unit, lines: List[str]) -> bo
 async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, battle_message: discord.Message) -> None:
     state.phase = "enemy"
     state.moved_this_turn.clear()
+    await interaction.channel.send(embed=phase_banner_embed("enemy"))
     await lock_battle_message(interaction, battle_message.id)
     active_enemy_message = await create_phase_battle_message(interaction, state)
 
     for enemy_name in list(state.enemies.keys()):
-        if enemy_name not in state.enemies or not state.players:
+        if enemy_name not in state.enemies or not state.players or state.battle_over:
             continue
         destination = find_enemy_move_destination(state, enemy_name)
         enemy = state.enemies[enemy_name]
@@ -444,10 +473,16 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
         public_embed = discord.Embed(title="Battle Log", description="\n".join(lines), color=0xD67F2C)
         await interaction.channel.send(embed=public_embed)
         await refresh_battle_message(interaction, state, active_enemy_message)
+        if await check_and_finalize_battle(interaction, state):
+            return
         await asyncio.sleep(0.4)
+
+    if await check_and_finalize_battle(interaction, state):
+        return
 
     state.phase = "player"
     state.moved_this_turn.clear()
+    await interaction.channel.send(embed=phase_banner_embed("player"))
     await lock_battle_message(interaction, active_enemy_message.id)
     await create_phase_battle_message(interaction, state)
 
@@ -526,6 +561,9 @@ class PreBattleView(discord.ui.View):
 
     @discord.ui.button(label="Fight", style=discord.ButtonStyle.danger)
     async def fight(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if self.state.battle_over:
+            await interaction.response.send_message("This battle is already over.", ephemeral=True)
+            return
         player = self.state.players[self.player_name]
         enemy = self.state.enemies[self.enemy_name]
         lines: List[str] = [f"**{player.name}** initiates combat against **{enemy.name}**!"]
@@ -552,6 +590,8 @@ class PreBattleView(discord.ui.View):
         if active_message_id is not None:
             battle_message = await interaction.channel.fetch_message(active_message_id)
             await refresh_battle_message(interaction, self.state, battle_message)
+        if await check_and_finalize_battle(interaction, self.state):
+            return
 
         if self.state.phase == "player" and len(self.state.moved_this_turn) >= len(self.state.players):
             await interaction.followup.send("All remaining player units acted. Ending Player Phase.", ephemeral=True)
@@ -703,6 +743,9 @@ class BattleView(discord.ui.View):
 
     @discord.ui.button(label="Move", style=discord.ButtonStyle.primary)
     async def move(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if self.state.battle_over:
+            await interaction.response.send_message("This battle is already over.", ephemeral=True)
+            return
         if self.state.phase != "player":
             await interaction.response.send_message("You can only move units during Player Phase.", ephemeral=True)
             return
@@ -716,6 +759,9 @@ class BattleView(discord.ui.View):
 
     @discord.ui.button(label="End", style=discord.ButtonStyle.danger)
     async def end_phase(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if self.state.battle_over:
+            await interaction.response.send_message("This battle is already over.", ephemeral=True)
+            return
         if self.state.phase != "player":
             await interaction.response.send_message("You can only end phase during Player Phase.", ephemeral=True)
             return
@@ -762,13 +808,20 @@ async def battle(interaction: discord.Interaction) -> None:
 
     img = render_battle_map(state)
     file = discord.File(img, filename="battle_map.png")
-    embed = discord.Embed(title="Fire Emblem Mock Battle", description=state_summary(state), color=0x5C9E31)
+    intro = "\n".join([
+        state_summary(state),
+        "",
+        "### Win Condition: **Route the Enemy**",
+        "### Loss Condition: **Lose All Units**",
+    ])
+    embed = discord.Embed(title="Fire Emblem Mock Battle", description=intro, color=0x5C9E31)
     embed.set_image(url="attachment://battle_map.png")
 
     await interaction.response.send_message(embed=embed, file=file, view=BattleView(client, state, 0))
     message = await interaction.original_response()
     state.active_battle_message_id = message.id
     await message.edit(view=BattleView(client, state, message.id))
+    await interaction.channel.send(embed=phase_banner_embed("player"))
 
 
 def main() -> None:
