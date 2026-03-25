@@ -36,6 +36,17 @@ class UnitStats:
     mov: int
 
 
+@dataclass(frozen=True)
+class Weapon:
+    name: str
+    might: int
+    hit: int
+    crit: int
+    weight: int
+    rng_min: int
+    rng_max: int
+
+
 @dataclass
 class Unit:
     name: str
@@ -44,6 +55,17 @@ class Unit:
     stats: UnitStats
     coord: str
     image_name: Optional[str] = None
+    current_hp: Optional[int] = None
+    inventory: List[Weapon] = field(default_factory=list)
+    equipped_index: int = 0
+
+    def __post_init__(self) -> None:
+        if self.current_hp is None:
+            self.current_hp = self.stats.hp
+
+    @property
+    def equipped_weapon(self) -> Weapon:
+        return self.inventory[self.equipped_index]
 
 
 @dataclass
@@ -53,6 +75,9 @@ class BattleState:
     phase: Literal["player", "enemy"] = "player"
     moved_this_turn: Set[str] = field(default_factory=set)
     active_battle_message_id: Optional[int] = None
+
+
+IRON_SWORD = Weapon(name="Iron Sword", might=5, hit=90, crit=0, weight=5, rng_min=1, rng_max=1)
 
 
 PLAYER_UNITS: List[Unit] = [
@@ -142,6 +167,59 @@ def move_coord(coord: str, direction: str) -> str:
     return xy_to_coord(row, col)
 
 
+def manhattan_distance(a: str, b: str) -> int:
+    ar, ac = coord_to_xy(a)
+    br, bc = coord_to_xy(b)
+    return abs(ar - br) + abs(ac - bc)
+
+
+def in_weapon_range(attacker: Unit, defender: Unit) -> bool:
+    distance = manhattan_distance(attacker.coord, defender.coord)
+    weapon = attacker.equipped_weapon
+    return weapon.rng_min <= distance <= weapon.rng_max
+
+
+def attack_speed(unit: Unit) -> int:
+    return unit.stats.spd - max(0, unit.equipped_weapon.weight - unit.stats.bld)
+
+
+def calc_hit(attacker: Unit, defender: Unit) -> int:
+    hit = attacker.equipped_weapon.hit + (attacker.stats.dex * 2) + (attacker.stats.luck // 2)
+    avoid = (attack_speed(defender) * 2) + defender.stats.luck
+    return clamp(hit - avoid, 0, 100)
+
+
+def calc_crit(attacker: Unit, defender: Unit) -> int:
+    crit = attacker.equipped_weapon.crit + (attacker.stats.dex // 2)
+    crit_avoid = defender.stats.luck
+    return clamp(crit - crit_avoid, 0, 100)
+
+
+def calc_damage(attacker: Unit, defender: Unit) -> int:
+    atk = attacker.stats.strength + attacker.equipped_weapon.might
+    return max(0, atk - defender.stats.defense)
+
+
+def hp_bar(after_hp: int, max_hp: int, *, width: int = 10) -> str:
+    fill = round((after_hp / max_hp) * width) if max_hp else 0
+    fill = clamp(fill, 0, width)
+    return "🟦" * fill + "⬜" * (width - fill)
+
+
+def clone_unit(base: Unit) -> Unit:
+    return Unit(
+        name=base.name,
+        level=base.level,
+        klass=base.klass,
+        stats=base.stats,
+        coord=base.coord,
+        image_name=base.image_name,
+        current_hp=base.stats.hp,
+        inventory=[IRON_SWORD],
+        equipped_index=0,
+    )
+
+
 def occupied_coords(state: BattleState, *, ignore_player: Optional[str] = None, ignore_enemy: Optional[str] = None) -> Set[str]:
     occupied: Set[str] = set()
     for player in state.players.values():
@@ -220,7 +298,7 @@ def state_summary(state: BattleState) -> str:
         f"## {phase_label}",
         f"### Player Units: **{len(state.players)}**",
         f"### Enemy Units: **{len(state.enemies)}**",
-        f"\nMoved this phase: **{moved}**",
+        f"\nActed this phase: **{moved}**",
     ])
 
 
@@ -293,6 +371,149 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
     await create_phase_battle_message(interaction, state)
 
 
+def build_prebattle_embed(player: Unit, enemy: Unit) -> discord.Embed:
+    player_dmg = calc_damage(player, enemy)
+    player_hit = calc_hit(player, enemy)
+    player_crit = calc_crit(player, enemy)
+    enemy_can_counter = in_weapon_range(enemy, player)
+    enemy_dmg = calc_damage(enemy, player) if enemy_can_counter else 0
+    enemy_hit = calc_hit(enemy, player) if enemy_can_counter else 0
+    enemy_crit = calc_crit(enemy, player) if enemy_can_counter else 0
+    player_after_hp = max(0, player.current_hp - enemy_dmg)
+    enemy_after_hp = max(0, enemy.current_hp - player_dmg)
+
+    embed = discord.Embed(title="Combat Forecast", color=0x1D82B6)
+    embed.add_field(
+        name=f"⚔️ {player.name} (Player)",
+        value="\n".join([
+            f"Weapon: **{player.equipped_weapon.name}**",
+            f"HP: **{player_after_hp}/{player.stats.hp}** {hp_bar(player_after_hp, player.stats.hp)}",
+            "",
+            f"Dmg: **{player_dmg}**",
+            f"Hit: **{player_hit}%**",
+            f"Crit: **{player_crit}%**",
+        ]),
+        inline=True,
+    )
+    embed.add_field(
+        name=f"🛡️ {enemy.name} (Enemy)",
+        value="\n".join([
+            f"Weapon: **{enemy.equipped_weapon.name}**",
+            f"HP: **{enemy_after_hp}/{enemy.stats.hp}** {hp_bar(enemy_after_hp, enemy.stats.hp)}",
+            "",
+            f"Dmg: **{enemy_dmg}**",
+            f"Hit: **{enemy_hit}%**",
+            f"Crit: **{enemy_crit}%**",
+        ]),
+        inline=True,
+    )
+    embed.set_footer(text="Fight to commit action, Weapon to swap, Back to undo movement.")
+    return embed
+
+
+class WeaponSelect(discord.ui.Select):
+    def __init__(self, state: BattleState, player_name: str, enemy_name: str, start_coord: str):
+        player = state.players[player_name]
+        options = [discord.SelectOption(label=weapon.name, value=str(idx)) for idx, weapon in enumerate(player.inventory)]
+        super().__init__(placeholder="Choose weapon", options=options)
+        self.state = state
+        self.player_name = player_name
+        self.enemy_name = enemy_name
+        self.start_coord = start_coord
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        player = self.state.players[self.player_name]
+        player.equipped_index = int(self.values[0])
+        enemy = self.state.enemies[self.enemy_name]
+        embed = build_prebattle_embed(player, enemy)
+        await interaction.response.edit_message(embed=embed, view=PreBattleView(self.state, self.player_name, self.enemy_name, self.start_coord))
+
+
+class WeaponSelectView(discord.ui.View):
+    def __init__(self, state: BattleState, player_name: str, enemy_name: str, start_coord: str):
+        super().__init__(timeout=180)
+        self.add_item(WeaponSelect(state, player_name, enemy_name, start_coord))
+
+
+class PreBattleView(discord.ui.View):
+    def __init__(self, state: BattleState, player_name: str, enemy_name: str, start_coord: str):
+        super().__init__(timeout=300)
+        self.state = state
+        self.player_name = player_name
+        self.enemy_name = enemy_name
+        self.start_coord = start_coord
+
+    @discord.ui.button(label="Fight", style=discord.ButtonStyle.danger)
+    async def fight(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        player = self.state.players[self.player_name]
+        enemy = self.state.enemies[self.enemy_name]
+        lines: List[str] = [f"**{player.name}** initiates combat against **{enemy.name}**!"]
+
+        def strike(attacker: Unit, defender: Unit) -> bool:
+            hit = calc_hit(attacker, defender)
+            crit = calc_crit(attacker, defender)
+            if random.randint(1, 100) > hit:
+                lines.append(f"{attacker.name} attacks with {attacker.equipped_weapon.name}, but misses.")
+                return defender.current_hp <= 0
+            dmg = calc_damage(attacker, defender)
+            critted = random.randint(1, 100) <= crit
+            total = dmg * 3 if critted else dmg
+            defender.current_hp = max(0, defender.current_hp - total)
+            crit_text = " **CRITICAL!**" if critted else ""
+            lines.append(
+                f"{attacker.name} hits {defender.name} for **{total}** damage.{crit_text} "
+                f"({defender.current_hp}/{defender.stats.hp} HP left)"
+            )
+            return defender.current_hp <= 0
+
+        defender_down = strike(player, enemy)
+        if defender_down:
+            lines.append(f"💀 {enemy.name} is defeated!")
+            self.state.enemies.pop(enemy.name, None)
+        elif in_weapon_range(enemy, player):
+            attacker_down = strike(enemy, player)
+            if attacker_down:
+                lines.append(f"💀 {player.name} is defeated!")
+                self.state.players.pop(player.name, None)
+        else:
+            lines.append(f"{enemy.name} cannot counterattack (out of range).")
+
+        self.state.moved_this_turn.add(self.player_name)
+        await interaction.response.edit_message(content="Combat resolved.", embed=None, view=None)
+
+        public_embed = discord.Embed(title="Battle Log", description="\n".join(lines), color=0xD67F2C)
+        await interaction.channel.send(embed=public_embed)
+
+        active_message_id = self.state.active_battle_message_id
+        if active_message_id is not None:
+            battle_message = await interaction.channel.fetch_message(active_message_id)
+            await refresh_battle_message(interaction, self.state, battle_message)
+
+        if self.state.phase == "player" and len(self.state.moved_this_turn) >= len(self.state.players):
+            await interaction.followup.send("All remaining player units acted. Ending Player Phase.", ephemeral=True)
+            if active_message_id is not None:
+                battle_message = await interaction.channel.fetch_message(active_message_id)
+                await run_enemy_phase(interaction, self.state, battle_message)
+
+    @discord.ui.button(label="Weapon", style=discord.ButtonStyle.primary)
+    async def weapon(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="Select a weapon to equip:",
+            embed=None,
+            view=WeaponSelectView(self.state, self.player_name, self.enemy_name, self.start_coord),
+        )
+
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        player = self.state.players.get(self.player_name)
+        if player is not None:
+            player.coord = self.start_coord
+        await interaction.response.edit_message(content="Movement undone. Reposition your unit.", embed=None, view=None)
+        active_message_id = self.state.active_battle_message_id
+        if active_message_id is not None:
+            battle_message = await interaction.channel.fetch_message(active_message_id)
+            await refresh_battle_message(interaction, self.state, battle_message)
+
 class DirectionView(discord.ui.View):
     def __init__(self, client: FireEmblemBot, state: BattleState, unit_name: str, battle_message_id: int):
         super().__init__(timeout=300)
@@ -361,8 +582,6 @@ class DirectionView(discord.ui.View):
             return
 
         self.state.players[self.unit_name].coord = self.preview_coord
-        self.state.moved_this_turn.add(self.unit_name)
-
         await interaction.response.edit_message(content=f"Confirmed {self.unit_name} to `{self.preview_coord}`.", view=None)
         active_message_id = self.state.active_battle_message_id
         if active_message_id is None:
@@ -370,9 +589,20 @@ class DirectionView(discord.ui.View):
             return
         battle_message = await interaction.channel.fetch_message(active_message_id)
         await refresh_battle_message(interaction, self.state, battle_message)
-        if self.state.phase == "player" and len(self.state.moved_this_turn) == len(self.state.players):
-            await interaction.followup.send("All player units acted. Ending Player Phase.", ephemeral=True)
-            await run_enemy_phase(interaction, self.state, battle_message)
+
+        player = self.state.players[self.unit_name]
+        in_range_enemies = [enemy for enemy in self.state.enemies.values() if in_weapon_range(player, enemy)]
+        if in_range_enemies:
+            enemy = in_range_enemies[0]
+            embed = build_prebattle_embed(player, enemy)
+            await interaction.followup.send(
+                "Enemy in range. Attack?",
+                embed=embed,
+                view=PreBattleView(self.state, self.unit_name, enemy.name, self.start_coord),
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send("No enemies in range. You can move this unit again or choose End phase.", ephemeral=True)
 
 
 class PickUnitView(discord.ui.View):
@@ -461,8 +691,8 @@ async def battle(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Bot client misconfigured.", ephemeral=True)
         return
 
-    players = {u.name: Unit(**u.__dict__) for u in PLAYER_UNITS}
-    enemies = {u.name: Unit(**u.__dict__) for u in ENEMY_UNITS}
+    players = {u.name: clone_unit(u) for u in PLAYER_UNITS}
+    enemies = {u.name: clone_unit(u) for u in ENEMY_UNITS}
     state = BattleState(players=players, enemies=enemies)
     client.battles[interaction.channel_id] = state
 
