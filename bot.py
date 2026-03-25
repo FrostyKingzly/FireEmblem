@@ -24,8 +24,7 @@ BOARD_BG = (216, 216, 216, 255)
 GRID_COLOR = (0, 0, 0, 255)
 
 ASSET_DIR = "assets"
-SPRITE_CELL_FILL = 0.92
-BACKGROUND_KEY_DISTANCE = 28
+SPRITE_CELL_FILL = 0.78
 
 _EMBEDDED_SPRITE_CACHE: Dict[str, Image.Image] = {}
 _REMOTE_SPRITE_CACHE: Dict[str, Image.Image] = {}
@@ -341,9 +340,6 @@ def load_and_scale_sprite(filename: str) -> Optional[Image.Image]:
             raw = base64.b64decode("".join(encoded))
             _EMBEDDED_SPRITE_CACHE[filename] = Image.open(BytesIO(raw)).convert("RGBA")
         sprite = _EMBEDDED_SPRITE_CACHE[filename]
-
-    if sprite.getchannel("A").getbbox() == (0, 0, sprite.width, sprite.height):
-        sprite = remove_solid_background(sprite)
 
     alpha_bbox = sprite.getchannel("A").getbbox()
     if alpha_bbox:
