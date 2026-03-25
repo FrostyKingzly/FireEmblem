@@ -52,6 +52,7 @@ class BattleState:
     enemies: Dict[str, Unit]
     phase: Literal["player", "enemy"] = "player"
     moved_this_turn: Set[str] = field(default_factory=set)
+    active_battle_message_id: Optional[int] = None
 
 
 PLAYER_UNITS: List[Unit] = [
@@ -215,14 +216,10 @@ def render_battle_map(state: BattleState) -> BytesIO:
 def state_summary(state: BattleState) -> str:
     moved = ", ".join(sorted(state.moved_this_turn)) if state.moved_this_turn else "None"
     phase_label = "Player Phase" if state.phase == "player" else "Enemy Phase"
-    player_lines = [f"- **{u.name}** ({u.klass}) at `{u.coord}`" for u in state.players.values()]
-    enemy_lines = [f"- **{u.name}** ({u.klass}) at `{u.coord}`" for u in state.enemies.values()]
     return "\n".join([
         f"## {phase_label}",
-        "### Player Units",
-        *player_lines,
-        "\n### Enemy Units",
-        *enemy_lines,
+        f"### Player Units: **{len(state.players)}**",
+        f"### Enemy Units: **{len(state.enemies)}**",
         f"\nMoved this phase: **{moved}**",
     ])
 
@@ -235,12 +232,25 @@ async def refresh_battle_message(interaction: discord.Interaction, state: Battle
     await message.edit(embed=embed, attachments=[file], view=BattleView(interaction.client, state, message.id))
 
 
-async def send_phase_transition(channel: discord.abc.Messageable, phase: Literal["player", "enemy"]) -> None:
-    is_player = phase == "player"
-    title = "PLAYER PHASE" if is_player else "ENEMY PHASE"
-    color = 0x2E86FF if is_player else 0xD63031
-    embed = discord.Embed(title=title, color=color)
-    await channel.send(embed=embed)
+async def lock_battle_message(interaction: discord.Interaction, message_id: Optional[int]) -> None:
+    if message_id is None:
+        return
+    try:
+        message = await interaction.channel.fetch_message(message_id)
+    except discord.NotFound:
+        return
+    await message.edit(view=None)
+
+
+async def create_phase_battle_message(interaction: discord.Interaction, state: BattleState) -> discord.Message:
+    img = render_battle_map(state)
+    file = discord.File(img, filename="battle_map.png")
+    embed = discord.Embed(title="Fire Emblem Mock Battle", description=state_summary(state), color=0x5C9E31)
+    embed.set_image(url="attachment://battle_map.png")
+    message = await interaction.channel.send(embed=embed, file=file)
+    await message.edit(view=BattleView(interaction.client, state, message.id))
+    state.active_battle_message_id = message.id
+    return message
 
 
 def find_enemy_move_destination(state: BattleState, enemy_name: str) -> str:
@@ -267,20 +277,20 @@ def find_enemy_move_destination(state: BattleState, enemy_name: str) -> str:
 async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, battle_message: discord.Message) -> None:
     state.phase = "enemy"
     state.moved_this_turn.clear()
-    await send_phase_transition(battle_message.channel, "enemy")
-    await refresh_battle_message(interaction, state, battle_message)
+    await lock_battle_message(interaction, battle_message.id)
+    active_enemy_message = await create_phase_battle_message(interaction, state)
 
     for enemy_name in state.enemies:
         destination = find_enemy_move_destination(state, enemy_name)
         state.enemies[enemy_name].coord = destination
         state.moved_this_turn.add(enemy_name)
-        await refresh_battle_message(interaction, state, battle_message)
+        await refresh_battle_message(interaction, state, active_enemy_message)
         await asyncio.sleep(0.4)
 
     state.phase = "player"
     state.moved_this_turn.clear()
-    await send_phase_transition(battle_message.channel, "player")
-    await refresh_battle_message(interaction, state, battle_message)
+    await lock_battle_message(interaction, active_enemy_message.id)
+    await create_phase_battle_message(interaction, state)
 
 
 class DirectionView(discord.ui.View):
@@ -310,8 +320,7 @@ class DirectionView(discord.ui.View):
             return
 
         candidate = move_coord(self.preview_coord, direction)
-        blocked = occupied_coords(self.state, ignore_player=self.unit_name)
-        if candidate == self.preview_coord or candidate in blocked:
+        if candidate == self.preview_coord:
             await interaction.response.send_message("That tile is blocked.", ephemeral=True)
             return
 
@@ -343,11 +352,23 @@ class DirectionView(discord.ui.View):
 
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        blocked = occupied_coords(self.state, ignore_player=self.unit_name)
+        if self.preview_coord in blocked:
+            await interaction.response.send_message(
+                "You can't end movement on an occupied tile.",
+                ephemeral=True,
+            )
+            return
+
         self.state.players[self.unit_name].coord = self.preview_coord
         self.state.moved_this_turn.add(self.unit_name)
 
         await interaction.response.edit_message(content=f"Confirmed {self.unit_name} to `{self.preview_coord}`.", view=None)
-        battle_message = await interaction.channel.fetch_message(self.battle_message_id)
+        active_message_id = self.state.active_battle_message_id
+        if active_message_id is None:
+            await interaction.followup.send("Unable to refresh battle map message.", ephemeral=True)
+            return
+        battle_message = await interaction.channel.fetch_message(active_message_id)
         await refresh_battle_message(interaction, self.state, battle_message)
         if self.state.phase == "player" and len(self.state.moved_this_turn) == len(self.state.players):
             await interaction.followup.send("All player units acted. Ending Player Phase.", ephemeral=True)
@@ -419,7 +440,11 @@ class EndPhaseConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Confirm End", style=discord.ButtonStyle.danger)
     async def confirm_end(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        battle_message = await interaction.channel.fetch_message(self.battle_message_id)
+        active_message_id = self.state.active_battle_message_id
+        if active_message_id is None:
+            await interaction.response.edit_message(content="No active battle message found.", view=None)
+            return
+        battle_message = await interaction.channel.fetch_message(active_message_id)
         await interaction.response.edit_message(content="Ending Player Phase.", view=None)
         await run_enemy_phase(interaction, self.state, battle_message)
 
@@ -448,8 +473,8 @@ async def battle(interaction: discord.Interaction) -> None:
 
     await interaction.response.send_message(embed=embed, file=file, view=BattleView(client, state, 0))
     message = await interaction.original_response()
+    state.active_battle_message_id = message.id
     await message.edit(view=BattleView(client, state, message.id))
-    await send_phase_transition(interaction.channel, "player")
 
 
 def main() -> None:
