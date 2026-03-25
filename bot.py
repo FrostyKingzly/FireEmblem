@@ -2,13 +2,15 @@ import asyncio
 import base64
 import os
 import random
+import urllib.request
+from collections import deque
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Dict, List, Literal, Optional, Set, Tuple
 
 import discord
 from discord import app_commands
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from embedded_assets import EMBEDDED_PLAYER_SPRITES
 
@@ -22,8 +24,11 @@ BOARD_BG = (216, 216, 216, 255)
 GRID_COLOR = (0, 0, 0, 255)
 
 ASSET_DIR = "assets"
-IMAGE_SCALE = 0.45
+SPRITE_CELL_FILL = 0.92
+BACKGROUND_KEY_DISTANCE = 28
+
 _EMBEDDED_SPRITE_CACHE: Dict[str, Image.Image] = {}
+_REMOTE_SPRITE_CACHE: Dict[str, Image.Image] = {}
 
 
 @dataclass
@@ -260,11 +265,73 @@ def cell_origin(coord: str) -> Tuple[int, int]:
     return x, y
 
 
+def color_distance(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+
+
+def remove_solid_background(sprite: Image.Image) -> Image.Image:
+    rgba = sprite.convert("RGBA")
+    width, height = rgba.size
+    if width == 0 or height == 0:
+        return rgba
+
+    pixels = rgba.load()
+    corners = {
+        pixels[0, 0][:3],
+        pixels[width - 1, 0][:3],
+        pixels[0, height - 1][:3],
+        pixels[width - 1, height - 1][:3],
+    }
+    if not corners:
+        return rgba
+
+    visited = [[False for _ in range(width)] for _ in range(height)]
+    queue: deque[Tuple[int, int]] = deque()
+    for x in range(width):
+        queue.append((x, 0))
+        queue.append((x, height - 1))
+    for y in range(height):
+        queue.append((0, y))
+        queue.append((width - 1, y))
+
+    while queue:
+        x, y = queue.popleft()
+        if visited[y][x]:
+            continue
+        visited[y][x] = True
+        r, g, b, a = pixels[x, y]
+        if a == 0:
+            continue
+        rgb = (r, g, b)
+        if min(color_distance(rgb, corner) for corner in corners) > BACKGROUND_KEY_DISTANCE:
+            continue
+
+        pixels[x, y] = (r, g, b, 0)
+        if x > 0:
+            queue.append((x - 1, y))
+        if x + 1 < width:
+            queue.append((x + 1, y))
+        if y > 0:
+            queue.append((x, y - 1))
+        if y + 1 < height:
+            queue.append((x, y + 1))
+
+    return rgba
+
+
 def load_and_scale_sprite(filename: str) -> Optional[Image.Image]:
     path = os.path.join(ASSET_DIR, filename)
     sprite: Optional[Image.Image] = None
 
-    if os.path.exists(path):
+    if filename.startswith(("http://", "https://")):
+        if filename not in _REMOTE_SPRITE_CACHE:
+            try:
+                with urllib.request.urlopen(filename, timeout=5) as response:
+                    _REMOTE_SPRITE_CACHE[filename] = Image.open(BytesIO(response.read())).convert("RGBA")
+            except Exception:
+                return None
+        sprite = _REMOTE_SPRITE_CACHE[filename]
+    elif os.path.exists(path):
         sprite = Image.open(path).convert("RGBA")
     else:
         encoded = EMBEDDED_PLAYER_SPRITES.get(filename)
@@ -275,9 +342,15 @@ def load_and_scale_sprite(filename: str) -> Optional[Image.Image]:
             _EMBEDDED_SPRITE_CACHE[filename] = Image.open(BytesIO(raw)).convert("RGBA")
         sprite = _EMBEDDED_SPRITE_CACHE[filename]
 
-    target_w = max(1, int(sprite.width * IMAGE_SCALE))
-    target_h = max(1, int(sprite.height * IMAGE_SCALE))
-    return sprite.resize((target_w, target_h), Image.Resampling.LANCZOS)
+    if sprite.getchannel("A").getbbox() == (0, 0, sprite.width, sprite.height):
+        sprite = remove_solid_background(sprite)
+
+    alpha_bbox = sprite.getchannel("A").getbbox()
+    if alpha_bbox:
+        sprite = sprite.crop(alpha_bbox)
+
+    target_px = max(1, int(CELL_SIZE * SPRITE_CELL_FILL))
+    return ImageOps.contain(sprite, (target_px, target_px), Image.Resampling.LANCZOS)
 
 
 def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, int, int, int]) -> None:
