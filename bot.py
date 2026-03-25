@@ -47,6 +47,9 @@ class Weapon:
     rng_max: int
 
 
+EnemyBehavior = Literal["aggressive", "stationary", "provoke"]
+
+
 @dataclass
 class Unit:
     name: str
@@ -58,6 +61,7 @@ class Unit:
     current_hp: Optional[int] = None
     inventory: List[Weapon] = field(default_factory=list)
     equipped_index: int = 0
+    behavior: EnemyBehavior = "aggressive"
 
     def __post_init__(self) -> None:
         if self.current_hp is None:
@@ -75,6 +79,7 @@ class BattleState:
     phase: Literal["player", "enemy"] = "player"
     moved_this_turn: Set[str] = field(default_factory=set)
     active_battle_message_id: Optional[int] = None
+    provoked_enemies: Set[str] = field(default_factory=set)
 
 
 IRON_SWORD = Weapon(name="Iron Sword", might=5, hit=90, crit=0, weight=5, rng_min=1, rng_max=1)
@@ -116,10 +121,10 @@ PLAYER_UNITS: List[Unit] = [
 ]
 
 ENEMY_UNITS: List[Unit] = [
-    Unit("Enemy 1", 1, "Unknown", UnitStats(1, 1, 1, 1, 1, 1, 1, 1, 1, 4), "12L"),
-    Unit("Enemy 2", 1, "Unknown", UnitStats(1, 1, 1, 1, 1, 1, 1, 1, 1, 4), "12K"),
-    Unit("Enemy 3", 1, "Unknown", UnitStats(1, 1, 1, 1, 1, 1, 1, 1, 1, 4), "11L"),
-    Unit("Enemy 4", 1, "Unknown", UnitStats(1, 1, 1, 1, 1, 1, 1, 1, 1, 4), "11K"),
+    Unit("Enemy 1", 1, "Unknown", UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4), "12L", behavior="aggressive"),
+    Unit("Enemy 2", 1, "Unknown", UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4), "12K", behavior="aggressive"),
+    Unit("Enemy 3", 1, "Unknown", UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4), "11L", behavior="aggressive"),
+    Unit("Enemy 4", 1, "Unknown", UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4), "11K", behavior="aggressive"),
 ]
 
 
@@ -217,6 +222,7 @@ def clone_unit(base: Unit) -> Unit:
         current_hp=base.stats.hp,
         inventory=[IRON_SWORD],
         equipped_index=0,
+        behavior=base.behavior,
     )
 
 
@@ -331,25 +337,75 @@ async def create_phase_battle_message(interaction: discord.Interaction, state: B
     return message
 
 
+def behavior_is_aggressive(state: BattleState, enemy: Unit) -> bool:
+    if enemy.behavior == "aggressive":
+        return True
+    if enemy.behavior == "stationary":
+        return False
+    if enemy.name in state.provoked_enemies:
+        return True
+    if any(in_weapon_range(enemy, player) for player in state.players.values()):
+        state.provoked_enemies.add(enemy.name)
+        return True
+    return False
+
+
 def find_enemy_move_destination(state: BattleState, enemy_name: str) -> str:
     enemy = state.enemies[enemy_name]
+    if not behavior_is_aggressive(state, enemy):
+        return enemy.coord
+
+    if not state.players:
+        return enemy.coord
+
     current = enemy.coord
     blocked = occupied_coords(state, ignore_enemy=enemy_name)
-    directions = ["up", "down", "left", "right"]
+    direction_priority = ["up", "left", "right", "down"]
+
     for _ in range(enemy.stats.mov):
-        random.shuffle(directions)
+        if any(
+            enemy.equipped_weapon.rng_min <= manhattan_distance(current, player.coord) <= enemy.equipped_weapon.rng_max
+            for player in state.players.values()
+        ):
+            break
+
+        nearest_player_coord = min(state.players.values(), key=lambda player: manhattan_distance(current, player.coord)).coord
         next_coord = None
-        for direction in directions:
+        next_distance = manhattan_distance(current, nearest_player_coord)
+        for direction in direction_priority:
             candidate = move_coord(current, direction)
             if candidate == current or candidate in blocked:
                 continue
-            next_coord = candidate
-            break
+            candidate_distance = manhattan_distance(candidate, nearest_player_coord)
+            if candidate_distance < next_distance:
+                next_coord = candidate
+                next_distance = candidate_distance
+
         if next_coord is None:
             break
+
         current = next_coord
         blocked.add(current)
     return current
+
+
+def resolve_combat_round(attacker: Unit, defender: Unit, lines: List[str]) -> bool:
+    hit = calc_hit(attacker, defender)
+    crit = calc_crit(attacker, defender)
+    if random.randint(1, 100) > hit:
+        lines.append(f"{attacker.name} attacks with {attacker.equipped_weapon.name}, but misses.")
+        return defender.current_hp <= 0
+
+    dmg = calc_damage(attacker, defender)
+    critted = random.randint(1, 100) <= crit
+    total = dmg * 3 if critted else dmg
+    defender.current_hp = max(0, defender.current_hp - total)
+    crit_text = " **CRITICAL!**" if critted else ""
+    lines.append(
+        f"{attacker.name} hits {defender.name} for **{total}** damage.{crit_text} "
+        f"({defender.current_hp}/{defender.stats.hp} HP left)"
+    )
+    return defender.current_hp <= 0
 
 
 async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, battle_message: discord.Message) -> None:
@@ -358,10 +414,35 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
     await lock_battle_message(interaction, battle_message.id)
     active_enemy_message = await create_phase_battle_message(interaction, state)
 
-    for enemy_name in state.enemies:
+    for enemy_name in list(state.enemies.keys()):
+        if enemy_name not in state.enemies or not state.players:
+            continue
         destination = find_enemy_move_destination(state, enemy_name)
-        state.enemies[enemy_name].coord = destination
+        enemy = state.enemies[enemy_name]
+        enemy.coord = destination
         state.moved_this_turn.add(enemy_name)
+        await refresh_battle_message(interaction, state, active_enemy_message)
+        await asyncio.sleep(0.4)
+
+        targets = [player for player in state.players.values() if in_weapon_range(enemy, player)]
+        if not targets:
+            continue
+
+        target = min(targets, key=lambda player: (player.current_hp, manhattan_distance(enemy.coord, player.coord)))
+        lines: List[str] = [f"**{enemy.name}** initiates combat against **{target.name}**!"]
+        defender_down = resolve_combat_round(enemy, target, lines)
+        if defender_down:
+            lines.append(f"💀 {target.name} is defeated!")
+            state.players.pop(target.name, None)
+            state.moved_this_turn.discard(target.name)
+        elif in_weapon_range(target, enemy):
+            attacker_down = resolve_combat_round(target, enemy, lines)
+            if attacker_down:
+                lines.append(f"💀 {enemy.name} is defeated!")
+                state.enemies.pop(enemy.name, None)
+
+        public_embed = discord.Embed(title="Battle Log", description="\n".join(lines), color=0xD67F2C)
+        await interaction.channel.send(embed=public_embed)
         await refresh_battle_message(interaction, state, active_enemy_message)
         await asyncio.sleep(0.4)
 
@@ -449,29 +530,12 @@ class PreBattleView(discord.ui.View):
         enemy = self.state.enemies[self.enemy_name]
         lines: List[str] = [f"**{player.name}** initiates combat against **{enemy.name}**!"]
 
-        def strike(attacker: Unit, defender: Unit) -> bool:
-            hit = calc_hit(attacker, defender)
-            crit = calc_crit(attacker, defender)
-            if random.randint(1, 100) > hit:
-                lines.append(f"{attacker.name} attacks with {attacker.equipped_weapon.name}, but misses.")
-                return defender.current_hp <= 0
-            dmg = calc_damage(attacker, defender)
-            critted = random.randint(1, 100) <= crit
-            total = dmg * 3 if critted else dmg
-            defender.current_hp = max(0, defender.current_hp - total)
-            crit_text = " **CRITICAL!**" if critted else ""
-            lines.append(
-                f"{attacker.name} hits {defender.name} for **{total}** damage.{crit_text} "
-                f"({defender.current_hp}/{defender.stats.hp} HP left)"
-            )
-            return defender.current_hp <= 0
-
-        defender_down = strike(player, enemy)
+        defender_down = resolve_combat_round(player, enemy, lines)
         if defender_down:
             lines.append(f"💀 {enemy.name} is defeated!")
             self.state.enemies.pop(enemy.name, None)
         elif in_weapon_range(enemy, player):
-            attacker_down = strike(enemy, player)
+            attacker_down = resolve_combat_round(enemy, player, lines)
             if attacker_down:
                 lines.append(f"💀 {player.name} is defeated!")
                 self.state.players.pop(player.name, None)
