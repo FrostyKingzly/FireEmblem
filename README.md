@@ -1,8 +1,8 @@
 # Fire Emblem Discord Battle Prototype
 
-This repo now includes a `/battle` slash command prototype for Discord that:
+This repo now includes `/battle` and `/battle2` slash command prototypes for Discord that:
 
-- Starts a battle immediately.
+- Start a battle immediately.
 - Uses a 12x12 board with coordinates (`1A` to `12L`), where letters are horizontal and numbers are vertical.
 - Spawns 4 playable units with the provided level/class/base stats:
   - Alear (`1A`)
@@ -14,6 +14,8 @@ This repo now includes a `/battle` slash command prototype for Discord that:
 - Lets you pick a unit, then move it with **Left/Up/Right/Down** and **Confirm**.
 - Updates the original map embed after confirm.
 - Prevents moving the same ally twice in one turn (phase logic can be added later).
+- Keeps the same player/enemy spawn points across both map commands.
+- `/battle` uses a 12x12 grid, while `/battle2` uses a larger 17x36 grid.
 
 ## Setup
 
