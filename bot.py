@@ -14,9 +14,11 @@ from PIL import Image, ImageDraw, ImageOps
 
 from embedded_assets import EMBEDDED_PLAYER_SPRITES
 
-# 12x12 map with A-L columns and 1-12 rows.
-GRID_COLUMNS = [chr(ord("A") + i) for i in range(12)]
-GRID_SIZE = 12
+# Default battle map is 12x12 with A-L columns and 1-12 rows.
+DEFAULT_GRID_COLS = 12
+DEFAULT_GRID_ROWS = 12
+MAP2_GRID_COLS = 17
+MAP2_GRID_ROWS = 36
 CELL_SIZE = 96
 GRID_LINE_WIDTH = 4
 BOARD_PADDING = 4
@@ -84,6 +86,9 @@ class Unit:
 class BattleState:
     players: Dict[str, Unit]
     enemies: Dict[str, Unit]
+    map_style: Literal["battle", "battle2"] = "battle"
+    grid_rows: int = DEFAULT_GRID_ROWS
+    grid_cols: int = DEFAULT_GRID_COLS
     phase: Literal["player", "enemy"] = "player"
     moved_this_turn: Set[str] = field(default_factory=set)
     active_battle_message_id: Optional[int] = None
@@ -146,27 +151,32 @@ class FireEmblemBot(discord.Client):
 
     async def setup_hook(self) -> None:
         self.tree.add_command(battle)
+        self.tree.add_command(battle2)
         await self.tree.sync()
 
 
-def coord_to_xy(coord: str) -> Tuple[int, int]:
+def grid_columns(grid_cols: int) -> List[str]:
+    return [chr(ord("A") + i) for i in range(grid_cols)]
+
+
+def coord_to_xy(coord: str, grid_cols: int = DEFAULT_GRID_COLS) -> Tuple[int, int]:
     row_str = coord[:-1]
     col_letter = coord[-1].upper()
     row = int(row_str)
-    col = GRID_COLUMNS.index(col_letter) + 1
+    col = ord(col_letter) - ord("A") + 1
     return row, col
 
 
-def xy_to_coord(row: int, col: int) -> str:
-    return f"{row}{GRID_COLUMNS[col - 1]}"
+def xy_to_coord(row: int, col: int, grid_cols: int = DEFAULT_GRID_COLS) -> str:
+    return f"{row}{grid_columns(grid_cols)[col - 1]}"
 
 
 def clamp(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
 
-def move_coord(coord: str, direction: str) -> str:
-    row, col = coord_to_xy(coord)
+def move_coord(coord: str, direction: str, *, grid_rows: int = DEFAULT_GRID_ROWS, grid_cols: int = DEFAULT_GRID_COLS) -> str:
+    row, col = coord_to_xy(coord, grid_cols)
     if direction == "left":
         col -= 1
     elif direction == "right":
@@ -176,9 +186,9 @@ def move_coord(coord: str, direction: str) -> str:
     elif direction == "down":
         row += 1
 
-    row = clamp(row, 1, GRID_SIZE)
-    col = clamp(col, 1, GRID_SIZE)
-    return xy_to_coord(row, col)
+    row = clamp(row, 1, grid_rows)
+    col = clamp(col, 1, grid_cols)
+    return xy_to_coord(row, col, grid_cols)
 
 
 def manhattan_distance(a: str, b: str) -> int:
@@ -246,19 +256,30 @@ def occupied_coords(state: BattleState, *, ignore_player: Optional[str] = None, 
     return occupied
 
 
-def create_base_grid() -> Image.Image:
-    side = GRID_SIZE * CELL_SIZE + GRID_LINE_WIDTH
-    img = Image.new("RGBA", (side, side), BOARD_BG)
+def create_base_grid(grid_rows: int, grid_cols: int, map_style: Literal["battle", "battle2"] = "battle") -> Image.Image:
+    width = grid_cols * CELL_SIZE + GRID_LINE_WIDTH
+    height = grid_rows * CELL_SIZE + GRID_LINE_WIDTH
+    bg = BOARD_BG if map_style == "battle" else (154, 190, 114, 255)
+    img = Image.new("RGBA", (width, height), bg)
     draw = ImageDraw.Draw(img)
-    for i in range(GRID_SIZE + 1):
+    if map_style == "battle2":
+        road = (148, 130, 108, 255)
+        draw.rectangle([(0, height // 4), (width, height // 4 + CELL_SIZE * 2)], fill=road)
+        draw.rectangle([(0, height // 2), (width, height // 2 + CELL_SIZE)], fill=road)
+        wall = (130, 116, 116, 255)
+        draw.rectangle([(0, height // 2 - CELL_SIZE // 2), (width, height // 2 - CELL_SIZE // 2 + CELL_SIZE // 2)], fill=wall)
+        draw.rectangle([(0, 0), (width, CELL_SIZE)], fill=wall)
+    for i in range(grid_cols + 1):
         p = i * CELL_SIZE
-        draw.line([(p, 0), (p, side)], fill=GRID_COLOR, width=GRID_LINE_WIDTH)
-        draw.line([(0, p), (side, p)], fill=GRID_COLOR, width=GRID_LINE_WIDTH)
+        draw.line([(p, 0), (p, height)], fill=GRID_COLOR, width=GRID_LINE_WIDTH)
+    for i in range(grid_rows + 1):
+        p = i * CELL_SIZE
+        draw.line([(0, p), (width, p)], fill=GRID_COLOR, width=GRID_LINE_WIDTH)
     return img
 
 
-def cell_origin(coord: str) -> Tuple[int, int]:
-    row, col = coord_to_xy(coord)
+def cell_origin(coord: str, grid_cols: int = DEFAULT_GRID_COLS) -> Tuple[int, int]:
+    row, col = coord_to_xy(coord, grid_cols)
     x = (col - 1) * CELL_SIZE + BOARD_PADDING
     y = (row - 1) * CELL_SIZE + BOARD_PADDING
     return x, y
@@ -349,8 +370,14 @@ def load_and_scale_sprite(filename: str) -> Optional[Image.Image]:
     return ImageOps.contain(sprite, (target_px, target_px), Image.Resampling.LANCZOS)
 
 
-def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, int, int, int]) -> None:
-    x, y = cell_origin(coord)
+def draw_fallback_unit(
+    draw: ImageDraw.ImageDraw,
+    coord: str,
+    color: Tuple[int, int, int, int],
+    *,
+    grid_cols: int = DEFAULT_GRID_COLS,
+) -> None:
+    x, y = cell_origin(coord, grid_cols)
     cx = x + CELL_SIZE // 2
     cy = y + CELL_SIZE // 2
     radius = CELL_SIZE // 3
@@ -358,18 +385,18 @@ def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, 
 
 
 def render_battle_map(state: BattleState) -> BytesIO:
-    board = create_base_grid()
+    board = create_base_grid(state.grid_rows, state.grid_cols, state.map_style)
     draw = ImageDraw.Draw(board)
 
     for enemy in state.enemies.values():
-        draw_fallback_unit(draw, enemy.coord, (220, 50, 50, 255))
+        draw_fallback_unit(draw, enemy.coord, (220, 50, 50, 255), grid_cols=state.grid_cols)
 
     for player in state.players.values():
         sprite = load_and_scale_sprite(player.image_name or "")
         if sprite is None:
-            draw_fallback_unit(draw, player.coord, (50, 120, 220, 255))
+            draw_fallback_unit(draw, player.coord, (50, 120, 220, 255), grid_cols=state.grid_cols)
             continue
-        x, y = cell_origin(player.coord)
+        x, y = cell_origin(player.coord, state.grid_cols)
         px = x + (CELL_SIZE - sprite.width) // 2
         py = y + (CELL_SIZE - sprite.height) // 2
         board.alpha_composite(sprite, (px, py))
@@ -483,7 +510,7 @@ def find_enemy_move_destination(state: BattleState, enemy_name: str) -> str:
         next_coord = None
         next_distance = manhattan_distance(current, nearest_player_coord)
         for direction in direction_priority:
-            candidate = move_coord(current, direction)
+            candidate = move_coord(current, direction, grid_rows=state.grid_rows, grid_cols=state.grid_cols)
             if candidate == current or candidate in blocked:
                 continue
             candidate_distance = manhattan_distance(candidate, nearest_player_coord)
@@ -726,7 +753,12 @@ class DirectionView(discord.ui.View):
             )
             return
 
-        candidate = move_coord(self.preview_coord, direction)
+        candidate = move_coord(
+            self.preview_coord,
+            direction,
+            grid_rows=self.state.grid_rows,
+            grid_cols=self.state.grid_cols,
+        )
         if candidate == self.preview_coord:
             await interaction.response.send_message("That tile is blocked.", ephemeral=True)
             return
@@ -875,17 +907,22 @@ class EndPhaseConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="Phase end cancelled.", view=None)
 
 
-@app_commands.command(name="battle", description="Start a Fire Emblem style battle prototype.")
-async def battle(interaction: discord.Interaction) -> None:
+async def start_battle(interaction: discord.Interaction, map_style: Literal["battle", "battle2"]) -> None:
     assert interaction.client is not None
     client = interaction.client
     if not isinstance(client, FireEmblemBot):
         await interaction.response.send_message("Bot client misconfigured.", ephemeral=True)
         return
 
+    grid_rows = DEFAULT_GRID_ROWS
+    grid_cols = DEFAULT_GRID_COLS
+    if map_style == "battle2":
+        grid_rows = MAP2_GRID_ROWS
+        grid_cols = MAP2_GRID_COLS
+
     players = {u.name: clone_unit(u) for u in PLAYER_UNITS}
     enemies = {u.name: clone_unit(u) for u in ENEMY_UNITS}
-    state = BattleState(players=players, enemies=enemies)
+    state = BattleState(players=players, enemies=enemies, map_style=map_style, grid_rows=grid_rows, grid_cols=grid_cols)
     client.battles[interaction.channel_id] = state
 
     img = render_battle_map(state)
@@ -904,6 +941,16 @@ async def battle(interaction: discord.Interaction) -> None:
     state.active_battle_message_id = message.id
     await message.edit(view=BattleView(client, state, message.id))
     await interaction.channel.send(embed=phase_banner_embed("player"))
+
+
+@app_commands.command(name="battle", description="Start a Fire Emblem style battle prototype.")
+async def battle(interaction: discord.Interaction) -> None:
+    await start_battle(interaction, "battle")
+
+
+@app_commands.command(name="battle2", description="Start a Fire Emblem style battle on map 2.")
+async def battle2(interaction: discord.Interaction) -> None:
+    await start_battle(interaction, "battle2")
 
 
 def main() -> None:
