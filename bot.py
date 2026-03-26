@@ -10,7 +10,7 @@ from typing import Dict, List, Literal, Optional, Set, Tuple
 
 import discord
 from discord import app_commands
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw
 
 from embedded_assets import EMBEDDED_PLAYER_SPRITES
 
@@ -24,8 +24,6 @@ BOARD_BG = (216, 216, 216, 255)
 GRID_COLOR = (0, 0, 0, 255)
 
 ASSET_DIR = "assets"
-SPRITE_CELL_FILL = 0.78
-
 _EMBEDDED_SPRITE_CACHE: Dict[str, Image.Image] = {}
 _REMOTE_SPRITE_CACHE: Dict[str, Image.Image] = {}
 
@@ -341,12 +339,7 @@ def load_and_scale_sprite(filename: str) -> Optional[Image.Image]:
             _EMBEDDED_SPRITE_CACHE[filename] = Image.open(BytesIO(raw)).convert("RGBA")
         sprite = _EMBEDDED_SPRITE_CACHE[filename]
 
-    alpha_bbox = sprite.getchannel("A").getbbox()
-    if alpha_bbox:
-        sprite = sprite.crop(alpha_bbox)
-
-    target_px = max(1, int(CELL_SIZE * SPRITE_CELL_FILL))
-    return ImageOps.contain(sprite, (target_px, target_px), Image.Resampling.LANCZOS)
+    return sprite
 
 
 def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, int, int, int]) -> None:
