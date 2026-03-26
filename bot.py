@@ -84,6 +84,7 @@ class Unit:
 class BattleState:
     players: Dict[str, Unit]
     enemies: Dict[str, Unit]
+    map_style: Literal["battle", "battle2"] = "battle"
     phase: Literal["player", "enemy"] = "player"
     moved_this_turn: Set[str] = field(default_factory=set)
     active_battle_message_id: Optional[int] = None
@@ -146,6 +147,7 @@ class FireEmblemBot(discord.Client):
 
     async def setup_hook(self) -> None:
         self.tree.add_command(battle)
+        self.tree.add_command(battle2)
         await self.tree.sync()
 
 
@@ -246,10 +248,18 @@ def occupied_coords(state: BattleState, *, ignore_player: Optional[str] = None, 
     return occupied
 
 
-def create_base_grid() -> Image.Image:
+def create_base_grid(map_style: Literal["battle", "battle2"] = "battle") -> Image.Image:
     side = GRID_SIZE * CELL_SIZE + GRID_LINE_WIDTH
-    img = Image.new("RGBA", (side, side), BOARD_BG)
+    bg = BOARD_BG if map_style == "battle" else (154, 190, 114, 255)
+    img = Image.new("RGBA", (side, side), bg)
     draw = ImageDraw.Draw(img)
+    if map_style == "battle2":
+        road = (148, 130, 108, 255)
+        draw.rectangle([(0, side // 4), (side, side // 4 + CELL_SIZE * 2)], fill=road)
+        draw.rectangle([(0, side // 2), (side, side // 2 + CELL_SIZE)], fill=road)
+        wall = (130, 116, 116, 255)
+        draw.rectangle([(0, side // 2 - CELL_SIZE // 2), (side, side // 2 - CELL_SIZE // 2 + CELL_SIZE // 2)], fill=wall)
+        draw.rectangle([(0, 0), (side, CELL_SIZE)], fill=wall)
     for i in range(GRID_SIZE + 1):
         p = i * CELL_SIZE
         draw.line([(p, 0), (p, side)], fill=GRID_COLOR, width=GRID_LINE_WIDTH)
@@ -358,7 +368,7 @@ def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, 
 
 
 def render_battle_map(state: BattleState) -> BytesIO:
-    board = create_base_grid()
+    board = create_base_grid(state.map_style)
     draw = ImageDraw.Draw(board)
 
     for enemy in state.enemies.values():
@@ -875,8 +885,7 @@ class EndPhaseConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="Phase end cancelled.", view=None)
 
 
-@app_commands.command(name="battle", description="Start a Fire Emblem style battle prototype.")
-async def battle(interaction: discord.Interaction) -> None:
+async def start_battle(interaction: discord.Interaction, map_style: Literal["battle", "battle2"]) -> None:
     assert interaction.client is not None
     client = interaction.client
     if not isinstance(client, FireEmblemBot):
@@ -885,7 +894,7 @@ async def battle(interaction: discord.Interaction) -> None:
 
     players = {u.name: clone_unit(u) for u in PLAYER_UNITS}
     enemies = {u.name: clone_unit(u) for u in ENEMY_UNITS}
-    state = BattleState(players=players, enemies=enemies)
+    state = BattleState(players=players, enemies=enemies, map_style=map_style)
     client.battles[interaction.channel_id] = state
 
     img = render_battle_map(state)
@@ -904,6 +913,16 @@ async def battle(interaction: discord.Interaction) -> None:
     state.active_battle_message_id = message.id
     await message.edit(view=BattleView(client, state, message.id))
     await interaction.channel.send(embed=phase_banner_embed("player"))
+
+
+@app_commands.command(name="battle", description="Start a Fire Emblem style battle prototype.")
+async def battle(interaction: discord.Interaction) -> None:
+    await start_battle(interaction, "battle")
+
+
+@app_commands.command(name="battle2", description="Start a Fire Emblem style battle on map 2.")
+async def battle2(interaction: discord.Interaction) -> None:
+    await start_battle(interaction, "battle2")
 
 
 def main() -> None:
