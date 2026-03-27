@@ -18,6 +18,7 @@ GRID_LINE_WIDTH = 4
 BOARD_PADDING = 4
 BOARD_BG = (216, 216, 216, 255)
 GRID_COLOR = (0, 0, 0, 255)
+BACKGROUND_KEY_DISTANCE = 45
 
 ASSET_DIR = "assets"
 
@@ -36,6 +37,10 @@ class UnitStats:
     mov: int
 
 
+WeaponKind = Literal["physical", "tome", "staff"]
+EnemyBehavior = Literal["aggressive", "stationary", "provoke"]
+
+
 @dataclass(frozen=True)
 class Weapon:
     name: str
@@ -45,9 +50,10 @@ class Weapon:
     weight: int
     rng_min: int
     rng_max: int
-
-
-EnemyBehavior = Literal["aggressive", "stationary", "provoke"]
+    kind: WeaponKind = "physical"
+    heal_power: int = 0
+    inflicts_poison: bool = False
+    crit_multiplier: float = 1.0
 
 
 @dataclass
@@ -62,6 +68,8 @@ class Unit:
     inventory: List[Weapon] = field(default_factory=list)
     equipped_index: int = 0
     behavior: EnemyBehavior = "aggressive"
+    personal_skill: Optional[str] = None
+    poison_stacks: int = 0
 
     def __post_init__(self) -> None:
         if self.current_hp is None:
@@ -83,49 +91,143 @@ class BattleState:
     battle_over: bool = False
 
 
-IRON_SWORD = Weapon(name="Iron Sword", might=5, hit=90, crit=0, weight=5, rng_min=1, rng_max=1)
+# FE Engage-inspired class base stats storage. (Some classes intentionally not yet used by units.)
+CLASS_BASE_STATS: Dict[str, UnitStats] = {
+    "Sword Fighter": UnitStats(20, 5, 0, 7, 8, 3, 2, 2, 5, 4),
+    "Swordmaster": UnitStats(21, 6, 1, 9, 11, 4, 3, 4, 6, 5),
+    "Hero": UnitStats(23, 8, 0, 8, 9, 5, 2, 3, 7, 5),
+    "Lance Fighter": UnitStats(23, 7, 2, 8, 6, 4, 2, 2, 5, 4),
+    "Halberdier": UnitStats(24, 9, 1, 9, 7, 6, 2, 3, 6, 5),
+    "Royal Knight": UnitStats(23, 7, 5, 9, 8, 5, 4, 5, 6, 6),
+    "Axe Fighter": UnitStats(26, 9, 0, 5, 5, 3, 1, 1, 7, 4),
+    "Berserker": UnitStats(29, 13, 0, 6, 6, 3, 2, 2, 9, 5),
+    "Warrior": UnitStats(27, 12, 1, 7, 7, 4, 3, 2, 8, 5),
+    "Archer": UnitStats(19, 6, 0, 9, 5, 2, 1, 2, 4, 4),
+    "Sniper": UnitStats(22, 8, 1, 11, 6, 3, 1, 3, 5, 5),
+    "Bow Knight": UnitStats(22, 7, 2, 10, 8, 3, 3, 3, 5, 6),
+    "Sword Armor": UnitStats(25, 8, 0, 6, 1, 12, 0, 2, 7, 4),
+    "Lance Armor": UnitStats(25, 8, 0, 6, 1, 12, 0, 2, 7, 4),
+    "Axe Armor": UnitStats(25, 8, 0, 6, 1, 12, 0, 2, 7, 4),
+    "General": UnitStats(28, 11, 1, 7, 2, 14, 1, 3, 10, 4),
+    "Great Knight": UnitStats(26, 9, 2, 8, 5, 13, 2, 3, 8, 6),
+    "Sword Cavalier": UnitStats(23, 6, 1, 8, 7, 4, 2, 2, 6, 5),
+    "Lance Cavalier": UnitStats(23, 6, 1, 8, 7, 4, 2, 2, 6, 5),
+    "Axe Cavalier": UnitStats(23, 6, 1, 8, 7, 4, 2, 2, 6, 5),
+    "Paladin": UnitStats(25, 8, 2, 10, 8, 6, 3, 3, 7, 6),
+    "Wolf Knight": UnitStats(23, 6, 3, 9, 10, 4, 4, 4, 6, 6),
+    "Mage": UnitStats(18, 1, 7, 6, 6, 1, 7, 2, 4, 4),
+    "Sage": UnitStats(20, 1, 9, 8, 7, 3, 9, 3, 5, 5),
+    "Mage Knight": UnitStats(21, 5, 7, 8, 9, 3, 8, 2, 6, 6),
+    "Martial Monk": UnitStats(18, 3, 5, 6, 5, 3, 8, 3, 3, 4),
+    "Martial Master": UnitStats(22, 6, 5, 6, 5, 4, 7, 4, 6, 5),
+    "High Priest": UnitStats(20, 3, 8, 8, 6, 3, 10, 5, 4, 5),
+    "Sword Flier": UnitStats(21, 5, 2, 7, 9, 3, 7, 3, 4, 5),
+    "Lance Flier": UnitStats(21, 5, 2, 7, 9, 3, 7, 3, 4, 5),
+    "Axe Flier": UnitStats(21, 5, 2, 7, 9, 3, 7, 3, 4, 5),
+    "Griffin Knight": UnitStats(22, 7, 3, 10, 11, 4, 9, 5, 5, 6),
+    "Wyvern Knight": UnitStats(25, 9, 1, 8, 9, 6, 5, 3, 6, 6),
+    "Thief": UnitStats(22, 5, 0, 10, 10, 6, 2, 2, 4, 5),
+    "Dancer": UnitStats(21, 5, 1, 8, 8, 2, 5, 5, 5, 5),
+    "Fell Child (DLC)": UnitStats(20, 5, 5, 5, 5, 5, 5, 5, 5, 5),
+    "Melusine": UnitStats(22, 7, 8, 6, 8, 6, 9, 2, 6, 6),
+    "Enchanter": UnitStats(20, 5, 5, 5, 5, 5, 5, 5, 5, 5),
+    "Mage Cannoneer": UnitStats(20, 5, 5, 5, 5, 5, 5, 5, 5, 5),
+}
+
+
+WEAPONS: Dict[str, Weapon] = {
+    "Iron Sword": Weapon(name="Iron Sword", might=5, hit=90, crit=0, weight=5, rng_min=1, rng_max=1),
+    "Killing Edge": Weapon(name="Killing Edge", might=9, hit=75, crit=30, weight=10, rng_min=1, rng_max=1, crit_multiplier=1.5),
+    "Iron Dagger": Weapon(name="Iron Dagger", might=5, hit=100, crit=0, weight=3, rng_min=1, rng_max=2, inflicts_poison=True),
+    "Fire": Weapon(name="Fire", might=5, hit=95, crit=0, weight=4, rng_min=1, rng_max=2, kind="tome"),
+    "Heal": Weapon(name="Heal", might=0, hit=100, crit=0, weight=0, rng_min=1, rng_max=1, kind="staff", heal_power=10),
+    # Stored tome examples so future users inherit the correct range data model.
+    "Thunder": Weapon(name="Thunder", might=5, hit=80, crit=0, weight=10, rng_min=1, rng_max=3, kind="tome"),
+    "Wind": Weapon(name="Wind", might=4, hit=90, crit=0, weight=4, rng_min=1, rng_max=2, kind="tome"),
+    "Elfire": Weapon(name="Elfire", might=11, hit=90, crit=0, weight=7, rng_min=1, rng_max=2, kind="tome"),
+    "Thoron": Weapon(name="Thoron", might=18, hit=70, crit=0, weight=16, rng_min=1, rng_max=3, kind="tome"),
+    "Meteor": Weapon(name="Meteor", might=13, hit=80, crit=0, weight=20, rng_min=3, rng_max=7, kind="tome"),
+}
 
 
 PLAYER_UNITS: List[Unit] = [
     Unit(
         name="Alear",
         level=1,
-        klass="Dragon Child",
-        stats=UnitStats(22, 6, 0, 5, 7, 5, 3, 5, 4, 4),
+        klass="Sword Fighter",
+        stats=CLASS_BASE_STATS["Sword Fighter"],
         coord="1A",
         image_name="alear.png",
+        inventory=[WEAPONS["Killing Edge"]],
+        personal_skill="Poison Hunter",
     ),
     Unit(
         name="Vander",
         level=1,
-        klass="Paladin",
-        stats=UnitStats(40, 11, 5, 10, 8, 10, 8, 6, 8, 6),
+        klass="Martial Monk",
+        stats=CLASS_BASE_STATS["Martial Monk"],
         coord="1B",
         image_name="vander.png",
+        inventory=[WEAPONS["Heal"]],
     ),
     Unit(
         name="Clanne",
         level=1,
-        klass="Mage",
-        stats=UnitStats(19, 1, 8, 11, 9, 4, 7, 4, 4, 4),
+        klass="Thief",
+        stats=CLASS_BASE_STATS["Thief"],
         coord="2A",
         image_name="clanne.png",
+        inventory=[WEAPONS["Iron Dagger"]],
     ),
     Unit(
         name="Framme",
         level=1,
-        klass="Martial Monk",
-        stats=UnitStats(18, 3, 5, 8, 7, 4, 8, 5, 3, 4),
+        klass="Mage",
+        stats=CLASS_BASE_STATS["Mage"],
         coord="2B",
         image_name="framme.png",
+        inventory=[WEAPONS["Fire"]],
+        personal_skill="Toxic Tome",
     ),
 ]
 
 ENEMY_UNITS: List[Unit] = [
-    Unit("Enemy 1", 1, "Unknown", UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4), "12L", behavior="aggressive"),
-    Unit("Enemy 2", 1, "Unknown", UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4), "12K", behavior="aggressive"),
-    Unit("Enemy 3", 1, "Unknown", UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4), "11L", behavior="aggressive"),
-    Unit("Enemy 4", 1, "Unknown", UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4), "11K", behavior="aggressive"),
+    Unit(
+        "Enemy 1",
+        1,
+        "Unknown",
+        UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
+        "12L",
+        behavior="aggressive",
+        inventory=[WEAPONS["Iron Sword"]],
+    ),
+    Unit(
+        "Enemy 2",
+        1,
+        "Unknown",
+        UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
+        "12K",
+        behavior="aggressive",
+        inventory=[WEAPONS["Iron Sword"]],
+    ),
+    Unit(
+        "Enemy 3",
+        1,
+        "Unknown",
+        UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
+        "11L",
+        behavior="aggressive",
+        inventory=[WEAPONS["Iron Sword"]],
+    ),
+    Unit(
+        "Enemy 4",
+        1,
+        "Unknown",
+        UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
+        "11K",
+        behavior="aggressive",
+        inventory=[WEAPONS["Iron Sword"]],
+    ),
 ]
 
 
@@ -197,13 +299,25 @@ def calc_hit(attacker: Unit, defender: Unit) -> int:
 
 def calc_crit(attacker: Unit, defender: Unit) -> int:
     crit = attacker.equipped_weapon.crit + (attacker.stats.dex // 2)
+    crit = round(crit * attacker.equipped_weapon.crit_multiplier)
+    # Personal skill: Alear gets +50% crit when attacking poisoned targets.
+    if attacker.name == "Alear" and defender.poison_stacks > 0:
+        crit = round(crit * 1.5)
     crit_avoid = defender.stats.luck
     return clamp(crit - crit_avoid, 0, 100)
 
 
+def poison_bonus_damage(stacks: int) -> int:
+    # FE Engage poison bonus: +1 / +3 / +5 damage taken.
+    return {0: 0, 1: 1, 2: 3, 3: 5}.get(clamp(stacks, 0, 3), 0)
+
+
 def calc_damage(attacker: Unit, defender: Unit) -> int:
-    atk = attacker.stats.strength + attacker.equipped_weapon.might
-    return max(0, atk - defender.stats.defense)
+    weapon = attacker.equipped_weapon
+    offensive_stat = attacker.stats.magic if weapon.kind in {"tome", "staff"} else attacker.stats.strength
+    target_defense = defender.stats.res if weapon.kind in {"tome", "staff"} else defender.stats.defense
+    atk = offensive_stat + weapon.might
+    return max(0, atk - target_defense + poison_bonus_damage(defender.poison_stacks))
 
 
 def hp_bar(after_hp: int, max_hp: int, *, width: int = 10) -> str:
@@ -221,9 +335,10 @@ def clone_unit(base: Unit) -> Unit:
         coord=base.coord,
         image_name=base.image_name,
         current_hp=base.stats.hp,
-        inventory=[IRON_SWORD],
+        inventory=list(base.inventory),
         equipped_index=0,
         behavior=base.behavior,
+        personal_skill=base.personal_skill,
     )
 
 
@@ -352,11 +467,18 @@ def render_battle_map(state: BattleState) -> BytesIO:
 def state_summary(state: BattleState) -> str:
     moved = ", ".join(sorted(state.moved_this_turn)) if state.moved_this_turn else "None"
     phase_label = "Player Phase" if state.phase == "player" else "Enemy Phase"
+    poison_lines = []
+    for team in (state.players, state.enemies):
+        for unit in team.values():
+            if unit.poison_stacks > 0:
+                poison_lines.append(f"{unit.name}({unit.poison_stacks})")
+    poison_text = ", ".join(poison_lines) if poison_lines else "None"
     return "\n".join([
         f"## {phase_label}",
         f"### Player Units: **{len(state.players)}**",
         f"### Enemy Units: **{len(state.enemies)}**",
         f"\nActed this phase: **{moved}**",
+        f"Poison stacks: **{poison_text}**",
     ])
 
 
@@ -468,6 +590,19 @@ def find_enemy_move_destination(state: BattleState, enemy_name: str) -> str:
     return current
 
 
+def apply_on_hit_effects(attacker: Unit, defender: Unit, *, lines: List[str]) -> None:
+    if attacker.equipped_weapon.inflicts_poison:
+        defender.poison_stacks = clamp(defender.poison_stacks + 1, 0, 3)
+        lines.append(f"☠️ {defender.name} is poisoned (stacks: {defender.poison_stacks}).")
+
+
+def apply_after_combat_skill(attacker: Unit, defender: Unit, *, lines: List[str]) -> None:
+    # Framme personal: if attacker used a tome, poison target after combat.
+    if attacker.name == "Framme" and attacker.equipped_weapon.kind == "tome" and defender.current_hp > 0:
+        defender.poison_stacks = clamp(defender.poison_stacks + 1, 0, 3)
+        lines.append(f"✨ Toxic Tome activates: {defender.name} is poisoned (stacks: {defender.poison_stacks}).")
+
+
 def resolve_combat_round(attacker: Unit, defender: Unit, lines: List[str]) -> bool:
     hit = calc_hit(attacker, defender)
     crit = calc_crit(attacker, defender)
@@ -484,7 +619,12 @@ def resolve_combat_round(attacker: Unit, defender: Unit, lines: List[str]) -> bo
         f"{attacker.name} hits {defender.name} for **{total}** damage.{crit_text} "
         f"({defender.current_hp}/{defender.stats.hp} HP left)"
     )
+    apply_on_hit_effects(attacker, defender, lines=lines)
     return defender.current_hp <= 0
+
+
+def heal_amount(healer: Unit) -> int:
+    return healer.equipped_weapon.heal_power + healer.stats.magic
 
 
 async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, battle_message: discord.Message) -> None:
@@ -517,6 +657,7 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
             state.moved_this_turn.discard(target.name)
         elif in_weapon_range(target, enemy):
             attacker_down = resolve_combat_round(target, enemy, lines)
+            apply_after_combat_skill(target, enemy, lines=lines)
             if attacker_down:
                 lines.append(f"💀 {enemy.name} is defeated!")
                 state.enemies.pop(enemy.name, None)
@@ -578,6 +719,46 @@ def build_prebattle_embed(player: Unit, enemy: Unit) -> discord.Embed:
     return embed
 
 
+class HealTargetSelect(discord.ui.Select):
+    def __init__(self, state: BattleState, healer_name: str):
+        healer = state.players[healer_name]
+        options: List[discord.SelectOption] = []
+        for ally in state.players.values():
+            if ally.name == healer.name:
+                continue
+            if ally.current_hp >= ally.stats.hp:
+                continue
+            if in_weapon_range(healer, ally):
+                options.append(discord.SelectOption(label=ally.name, value=ally.name))
+        super().__init__(placeholder="Choose ally to heal", options=options)
+        self.state = state
+        self.healer_name = healer_name
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        healer = self.state.players[self.healer_name]
+        ally_name = self.values[0]
+        ally = self.state.players[ally_name]
+        amount = heal_amount(healer)
+        before = ally.current_hp
+        ally.current_hp = min(ally.stats.hp, ally.current_hp + amount)
+        self.state.moved_this_turn.add(self.healer_name)
+        await interaction.response.edit_message(
+            content=f"{healer.name} uses {healer.equipped_weapon.name} on {ally.name}: {before} → {ally.current_hp} HP.",
+            embed=None,
+            view=None,
+        )
+        active_message_id = self.state.active_battle_message_id
+        if active_message_id is not None:
+            battle_message = await interaction.channel.fetch_message(active_message_id)
+            await refresh_battle_message(interaction, self.state, battle_message)
+
+
+class HealTargetView(discord.ui.View):
+    def __init__(self, state: BattleState, healer_name: str):
+        super().__init__(timeout=180)
+        self.add_item(HealTargetSelect(state, healer_name))
+
+
 class WeaponSelect(discord.ui.Select):
     def __init__(self, state: BattleState, player_name: str, enemy_name: str, start_coord: str):
         player = state.players[player_name]
@@ -631,6 +812,7 @@ class PreBattleView(discord.ui.View):
         else:
             lines.append(f"{enemy.name} cannot counterattack (out of range).")
 
+        apply_after_combat_skill(player, enemy, lines=lines)
         self.state.moved_this_turn.add(self.player_name)
         await interaction.response.edit_message(content="Combat resolved.", embed=None, view=None)
 
@@ -668,6 +850,7 @@ class PreBattleView(discord.ui.View):
         if active_message_id is not None:
             battle_message = await interaction.channel.fetch_message(active_message_id)
             await refresh_battle_message(interaction, self.state, battle_message)
+
 
 class DirectionView(discord.ui.View):
     def __init__(self, client: FireEmblemBot, state: BattleState, unit_name: str, battle_message_id: int):
@@ -746,6 +929,18 @@ class DirectionView(discord.ui.View):
         await refresh_battle_message(interaction, self.state, battle_message)
 
         player = self.state.players[self.unit_name]
+        if player.equipped_weapon.kind == "staff":
+            heal_targets = [ally for ally in self.state.players.values() if ally.name != player.name and ally.current_hp < ally.stats.hp and in_weapon_range(player, ally)]
+            if heal_targets:
+                await interaction.followup.send(
+                    "Choose an adjacent ally to heal.",
+                    view=HealTargetView(self.state, self.unit_name),
+                    ephemeral=True,
+                )
+                return
+            await interaction.followup.send("No injured ally in staff range. You can still End phase.", ephemeral=True)
+            return
+
         in_range_enemies = [enemy for enemy in self.state.enemies.values() if in_weapon_range(player, enemy)]
         if in_range_enemies:
             enemy = in_range_enemies[0]
