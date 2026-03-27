@@ -152,12 +152,12 @@ WEAPONS: Dict[str, Weapon] = {
 
 PLAYER_UNITS: List[Unit] = [
     Unit(
-        name="Alear",
+        name="Acheron",
         level=1,
         klass="Sword Fighter",
         stats=CLASS_BASE_STATS["Sword Fighter"],
         coord="1A",
-        image_name="alear.png",
+        image_name="acheron.png",
         inventory=[WEAPONS["Killing Edge"]],
         personal_skill="Poison Hunter",
     ),
@@ -300,8 +300,8 @@ def calc_hit(attacker: Unit, defender: Unit) -> int:
 def calc_crit(attacker: Unit, defender: Unit) -> int:
     crit = attacker.equipped_weapon.crit + (attacker.stats.dex // 2)
     crit = round(crit * attacker.equipped_weapon.crit_multiplier)
-    # Personal skill: Alear gets +50% crit when attacking poisoned targets.
-    if attacker.name == "Alear" and defender.poison_stacks > 0:
+    # Personal skill: Acheron gets +50% crit when attacking poisoned targets.
+    if attacker.name == "Acheron" and defender.poison_stacks > 0:
         crit = round(crit * 1.5)
     crit_avoid = defender.stats.luck
     return clamp(crit - crit_avoid, 0, 100)
