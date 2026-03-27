@@ -23,14 +23,14 @@ This repo now includes a `/battle` slash command prototype for Discord that:
 python -m pip install -r requirements.txt
 ```
 
-2. Player sprite images are bundled in source as embedded defaults for:
+2. Player sprite images are loaded only from `assets/` using the unit name as the filename:
 
-- `alear.png`
-- `vander.png`
-- `clanne.png`
-- `framme.png`
+- `assets/Alear.png`
+- `assets/Vander.png`
+- `assets/Clanne.png`
+- `assets/Framme.png`
 
-If you place files with those names in `assets/`, local files override the embedded defaults.
+If a file is missing, the renderer draws a fallback colored token for that unit.
 
 The renderer scales each sprite to ~45% of its original dimensions to fit cells.
 

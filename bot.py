@@ -1,8 +1,6 @@
 import asyncio
-import base64
 import os
 import random
-import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -11,8 +9,6 @@ from typing import Dict, List, Literal, Optional, Set, Tuple
 import discord
 from discord import app_commands
 from PIL import Image, ImageDraw
-
-from embedded_assets import EMBEDDED_PLAYER_SPRITES
 
 # 12x12 map with A-L columns and 1-12 rows.
 GRID_COLUMNS = [chr(ord("A") + i) for i in range(12)]
@@ -24,8 +20,6 @@ BOARD_BG = (216, 216, 216, 255)
 GRID_COLOR = (0, 0, 0, 255)
 
 ASSET_DIR = "assets"
-_EMBEDDED_SPRITE_CACHE: Dict[str, Image.Image] = {}
-_REMOTE_SPRITE_CACHE: Dict[str, Image.Image] = {}
 
 
 @dataclass
@@ -316,30 +310,12 @@ def remove_solid_background(sprite: Image.Image) -> Image.Image:
     return rgba
 
 
-def load_and_scale_sprite(filename: str) -> Optional[Image.Image]:
+def load_sprite_from_assets(unit_name: str) -> Optional[Image.Image]:
+    filename = f"{unit_name}.png"
     path = os.path.join(ASSET_DIR, filename)
-    sprite: Optional[Image.Image] = None
-
-    if filename.startswith(("http://", "https://")):
-        if filename not in _REMOTE_SPRITE_CACHE:
-            try:
-                with urllib.request.urlopen(filename, timeout=5) as response:
-                    _REMOTE_SPRITE_CACHE[filename] = Image.open(BytesIO(response.read())).convert("RGBA")
-            except Exception:
-                return None
-        sprite = _REMOTE_SPRITE_CACHE[filename]
-    elif os.path.exists(path):
-        sprite = Image.open(path).convert("RGBA")
-    else:
-        encoded = EMBEDDED_PLAYER_SPRITES.get(filename)
-        if encoded is None:
-            return None
-        if filename not in _EMBEDDED_SPRITE_CACHE:
-            raw = base64.b64decode("".join(encoded))
-            _EMBEDDED_SPRITE_CACHE[filename] = Image.open(BytesIO(raw)).convert("RGBA")
-        sprite = _EMBEDDED_SPRITE_CACHE[filename]
-
-    return sprite
+    if not os.path.exists(path):
+        return None
+    return Image.open(path).convert("RGBA")
 
 
 def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, int, int, int]) -> None:
@@ -358,7 +334,7 @@ def render_battle_map(state: BattleState) -> BytesIO:
         draw_fallback_unit(draw, enemy.coord, (220, 50, 50, 255))
 
     for player in state.players.values():
-        sprite = load_and_scale_sprite(player.image_name or "")
+        sprite = load_sprite_from_assets(player.name)
         if sprite is None:
             draw_fallback_unit(draw, player.coord, (50, 120, 220, 255))
             continue
