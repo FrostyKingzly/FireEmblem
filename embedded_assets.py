@@ -1,7 +1,7 @@
 """Embedded default player sprites (PNG bytes, base64 encoded)."""
 
 EMBEDDED_PLAYER_SPRITES = {
-    "alear.png": (
+    "acheron.png": (
         "iVBORw0KGgoAAAANSUhEUgAAAf4AAAHUCAIAAABUOt0iAAEAAElEQVR4Aez9B2Bcx5GoCx9gBgMMco4kAkmAYM5RpMSkYAXbsqKT"
         "5LAOu+uw6e69e3fv/vve83//3be71xucs1e2LFuWZAVLViJFUqQoZoo5k2AAQOQwGAwm4P/qFObgYDAAARIgKXGOqEGfPt3V1dXd"
         "1dXV1dVxvb29RuyJUSBGgRgFYhS4mSgQfzNVNlbXGAViFIhRIEYBoUCM9cf6QYwCMQrEKHDTUSDG+m+6Jo9VOEaBGAViFIix/lgf"

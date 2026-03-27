@@ -5,7 +5,7 @@ This repo now includes a `/battle` slash command prototype for Discord that:
 - Starts a battle immediately.
 - Uses a 12x12 board with coordinates (`1A` to `12L`), where letters are horizontal and numbers are vertical.
 - Spawns 4 playable units with the provided level/class/base stats:
-  - Alear (`1A`)
+  - Acheron (`1A`)
   - Vander (`1B`)
   - Clanne (`2A`)
   - Framme (`2B`)
@@ -25,7 +25,7 @@ python -m pip install -r requirements.txt
 
 2. Player sprite images are loaded only from `assets/` using the unit name as the filename:
 
-- `assets/Alear.png`
+- `assets/acheron.png`
 - `assets/Vander.png`
 - `assets/Clanne.png`
 - `assets/Framme.png`
