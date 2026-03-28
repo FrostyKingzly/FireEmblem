@@ -22,6 +22,7 @@ BACKGROUND_KEY_DISTANCE = 45
 
 ASSET_DIR = "assets"
 TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "battle2_map.png")
+STARTING_POSITIONS = ["1A", "1B", "2A", "2B"]
 
 
 @dataclass
@@ -449,14 +450,31 @@ def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, 
     draw.ellipse([(cx - radius, cy - radius), (cx + radius, cy + radius)], fill=color, outline=(0, 0, 0, 255), width=3)
 
 
-def render_battle_map(state: BattleState) -> BytesIO:
+def render_battle_map(
+    state: BattleState,
+    *,
+    show_player_spaces: bool = False,
+    visible_player_names: Optional[Set[str]] = None,
+) -> BytesIO:
     board = create_base_grid()
     draw = ImageDraw.Draw(board)
+
+    if show_player_spaces:
+        for coord in STARTING_POSITIONS:
+            x, y = cell_origin(coord)
+            draw.rectangle(
+                [(x, y), (x + CELL_SIZE - BOARD_PADDING * 2, y + CELL_SIZE - BOARD_PADDING * 2)],
+                fill=(59, 130, 246, 90),
+                outline=(30, 64, 175, 255),
+                width=4,
+            )
 
     for enemy in state.enemies.values():
         draw_fallback_unit(draw, enemy.coord, (220, 50, 50, 255))
 
     for player in state.players.values():
+        if visible_player_names is not None and player.name not in visible_player_names:
+            continue
         sprite = load_sprite_from_assets(player)
         if sprite is None:
             draw_fallback_unit(draw, player.coord, (50, 120, 220, 255))
@@ -489,19 +507,79 @@ def render_test_map() -> BytesIO:
 def state_summary(state: BattleState) -> str:
     moved = ", ".join(sorted(state.moved_this_turn)) if state.moved_this_turn else "None"
     phase_label = "Player Phase" if state.phase == "player" else "Enemy Phase"
-    poison_lines = []
-    for team in (state.players, state.enemies):
-        for unit in team.values():
-            if unit.poison_stacks > 0:
-                poison_lines.append(f"{unit.name}({unit.poison_stacks})")
-    poison_text = ", ".join(poison_lines) if poison_lines else "None"
     return "\n".join([
         f"## {phase_label}",
         f"### Player Units: **{len(state.players)}**",
         f"### Enemy Units: **{len(state.enemies)}**",
         f"\nActed this phase: **{moved}**",
-        f"Poison stacks: **{poison_text}**",
     ])
+
+
+def unit_info_block(unit: Unit) -> str:
+    stats = unit.stats
+    inventory = ", ".join(w.name for w in unit.inventory) if unit.inventory else "None"
+    return "\n".join(
+        [
+            f"Name: **{unit.name}**",
+            f"Class: **{unit.klass}** Lv {unit.level}",
+            f"HP: **{unit.current_hp}/{stats.hp}**",
+            f"STR/MAG: **{stats.strength}/{stats.magic}**",
+            f"DEX/SPD: **{stats.dex}/{stats.spd}**",
+            f"DEF/RES: **{stats.defense}/{stats.res}**",
+            f"LCK/BLD/MOV: **{stats.luck}/{stats.bld}/{stats.mov}**",
+            f"Inventory: {inventory}",
+        ]
+    )
+
+
+def build_preparation_embed(state: BattleState, deployed: Dict[str, str]) -> discord.Embed:
+    enemies = ", ".join(sorted(unit.coord for unit in state.enemies.values()))
+    deployed_lines: List[str] = []
+    for slot in STARTING_POSITIONS:
+        unit_name = deployed.get(slot, "Empty")
+        deployed_lines.append(f"**{slot}** → {unit_name}")
+
+    embed = discord.Embed(title="Preparation Phase", color=0x5C9E31)
+    embed.description = "\n".join(
+        [
+            "Set your formation before battle begins.",
+            "",
+            f"### Enemy Units: **{len(state.enemies)}**",
+            f"Enemy positions: {enemies}",
+            "",
+            f"### Player Start Spaces: {', '.join(STARTING_POSITIONS)}",
+            "\n".join(deployed_lines),
+            "",
+            "### Win Condition: **Route the Enemy**",
+            "### Loss Condition: **Lose All Units**",
+        ]
+    )
+    embed.set_footer(text="Use Place Units, Inventory, Inspect, then Begin.")
+    return embed
+
+
+def build_inspect_embed(state: BattleState, coord: str) -> discord.Embed:
+    terrain_name = "Plains"
+    occupant_text = "No unit on this tile."
+    for player in state.players.values():
+        if player.coord == coord:
+            occupant_text = f"Player unit on tile.\n\n{unit_info_block(player)}"
+            break
+    else:
+        for enemy in state.enemies.values():
+            if enemy.coord == coord:
+                occupant_text = f"Enemy unit on tile.\n\n{unit_info_block(enemy)}"
+                break
+
+    embed = discord.Embed(title=f"Inspect {coord}", color=0x1D82B6)
+    embed.description = "\n".join(
+        [
+            f"Terrain: **{terrain_name}**",
+            "",
+            occupant_text,
+        ]
+    )
+    return embed
 
 
 def phase_banner_embed(phase: Literal["player", "enemy"]) -> discord.Embed:
@@ -1061,6 +1139,149 @@ class EndPhaseConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="Phase end cancelled.", view=None)
 
 
+class InspectCoordinateModal(discord.ui.Modal, title="Inspect Coordinate"):
+    coordinate = discord.ui.TextInput(label="Coordinate (e.g. 1A)", placeholder="1A", required=True, max_length=3)
+
+    def __init__(self, state: BattleState):
+        super().__init__()
+        self.state = state
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw = str(self.coordinate).strip().upper()
+        if len(raw) < 2:
+            await interaction.response.send_message("Invalid coordinate.", ephemeral=True)
+            return
+        row_str, col_letter = raw[:-1], raw[-1]
+        if not row_str.isdigit() or col_letter not in GRID_COLUMNS:
+            await interaction.response.send_message("Invalid coordinate format.", ephemeral=True)
+            return
+        row = int(row_str)
+        if row < 1 or row > GRID_SIZE:
+            await interaction.response.send_message("Coordinate is out of map bounds.", ephemeral=True)
+            return
+        coord = f"{row}{col_letter}"
+        await interaction.response.send_message(embed=build_inspect_embed(self.state, coord), ephemeral=True)
+
+
+class PlaceUnitSelect(discord.ui.Select):
+    def __init__(self, prep_view: "PreparationView"):
+        options = [discord.SelectOption(label=name, value=name) for name in prep_view.state.players.keys()]
+        super().__init__(placeholder="Choose a unit", options=options)
+        self.prep_view = prep_view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.prep_view.selected_unit = self.values[0]
+        await interaction.response.edit_message(
+            content=f"Selected unit: **{self.prep_view.selected_unit}**. Choose a start slot and press Assign.",
+            view=self.view,
+        )
+
+
+class PlaceSlotSelect(discord.ui.Select):
+    def __init__(self, prep_view: "PreparationView"):
+        options = [discord.SelectOption(label=slot, value=slot) for slot in STARTING_POSITIONS]
+        super().__init__(placeholder="Choose a start slot", options=options)
+        self.prep_view = prep_view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        self.prep_view.selected_slot = self.values[0]
+        await interaction.response.edit_message(
+            content=f"Selected slot: **{self.prep_view.selected_slot}**. Press Assign to confirm.",
+            view=self.view,
+        )
+
+
+class PlaceUnitsPickerView(discord.ui.View):
+    def __init__(self, prep_view: "PreparationView"):
+        super().__init__(timeout=300)
+        self.prep_view = prep_view
+        self.add_item(PlaceUnitSelect(prep_view))
+        self.add_item(PlaceSlotSelect(prep_view))
+
+    @discord.ui.button(label="Assign", style=discord.ButtonStyle.success)
+    async def assign(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not self.prep_view.selected_unit or not self.prep_view.selected_slot:
+            await interaction.response.send_message("Pick both a unit and a start slot first.", ephemeral=True)
+            return
+
+        unit = self.prep_view.selected_unit
+        slot = self.prep_view.selected_slot
+        for existing_slot, existing_unit in list(self.prep_view.deployed.items()):
+            if existing_unit == unit:
+                self.prep_view.deployed.pop(existing_slot)
+        self.prep_view.deployed[slot] = unit
+
+        visible_names = set(self.prep_view.deployed.values())
+        for deployed_slot, deployed_unit_name in self.prep_view.deployed.items():
+            self.prep_view.state.players[deployed_unit_name].coord = deployed_slot
+
+        prep_embed = build_preparation_embed(self.prep_view.state, self.prep_view.deployed)
+        img = render_battle_map(
+            self.prep_view.state,
+            show_player_spaces=True,
+            visible_player_names=visible_names,
+        )
+        file = discord.File(img, filename="battle_map.png")
+        prep_embed.set_image(url="attachment://battle_map.png")
+        await self.prep_view.message.edit(
+            embed=prep_embed,
+            attachments=[file],
+            view=self.prep_view,
+        )
+        await interaction.response.edit_message(content=f"Assigned **{unit}** to **{slot}**.", view=self)
+
+
+class PreparationView(discord.ui.View):
+    def __init__(self, client: FireEmblemBot, state: BattleState):
+        super().__init__(timeout=None)
+        self.client = client
+        self.state = state
+        self.message: Optional[discord.Message] = None
+        self.deployed: Dict[str, str] = {}
+        self.selected_unit: Optional[str] = None
+        self.selected_slot: Optional[str] = None
+
+    @discord.ui.button(label="Place Units", style=discord.ButtonStyle.primary)
+    async def place_units(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_message(
+            "Pick a unit and start slot, then assign.",
+            view=PlaceUnitsPickerView(self),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Inventory", style=discord.ButtonStyle.secondary)
+    async def inventory(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_message(
+            "Convoy is currently empty, so there are no available item/weapon swaps yet.",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Inspect", style=discord.ButtonStyle.secondary)
+    async def inspect(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(InspectCoordinateModal(self.state))
+
+    @discord.ui.button(label="Begin", style=discord.ButtonStyle.success)
+    async def begin(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if len(self.deployed) < len(self.state.players):
+            await interaction.response.send_message(
+                f"Deploy all player units first ({len(self.deployed)}/{len(self.state.players)} assigned).",
+                ephemeral=True,
+            )
+            return
+
+        for slot, unit_name in self.deployed.items():
+            self.state.players[unit_name].coord = slot
+
+        await interaction.response.edit_message(view=None)
+        await interaction.channel.send(
+            embed=discord.Embed(title="Win Conditions", description="**Route the Enemy**", color=0x1D82B6)
+        )
+        await interaction.channel.send(
+            embed=discord.Embed(title="Loss Conditions", description="**Lose All Units**", color=0xC0392B)
+        )
+        await interaction.channel.send(embed=phase_banner_embed("player"))
+        await create_phase_battle_message(interaction, self.state)
+
 @app_commands.command(name="battle", description="Start a Fire Emblem style battle prototype.")
 async def battle(interaction: discord.Interaction) -> None:
     assert interaction.client is not None
@@ -1074,22 +1295,16 @@ async def battle(interaction: discord.Interaction) -> None:
     state = BattleState(players=players, enemies=enemies)
     client.battles[interaction.channel_id] = state
 
-    img = render_battle_map(state)
+    img = render_battle_map(state, show_player_spaces=True, visible_player_names=set())
     file = discord.File(img, filename="battle_map.png")
-    intro = "\n".join([
-        state_summary(state),
-        "",
-        "### Win Condition: **Route the Enemy**",
-        "### Loss Condition: **Lose All Units**",
-    ])
-    embed = discord.Embed(title="Fire Emblem Mock Battle", description=intro, color=0x5C9E31)
+    prep_view = PreparationView(client, state)
+    embed = build_preparation_embed(state, prep_view.deployed)
     embed.set_image(url="attachment://battle_map.png")
 
-    await interaction.response.send_message(embed=embed, file=file, view=BattleView(client, state, 0))
+    await interaction.response.send_message(embed=embed, file=file, view=prep_view)
     message = await interaction.original_response()
-    state.active_battle_message_id = message.id
-    await message.edit(view=BattleView(client, state, message.id))
-    await interaction.channel.send(embed=phase_banner_embed("player"))
+    prep_view.message = message
+    await message.edit(view=prep_view)
 
 
 @app_commands.command(name="battle2", description="Show a no-units test map.")
