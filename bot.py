@@ -427,12 +427,20 @@ def remove_solid_background(sprite: Image.Image) -> Image.Image:
     return rgba
 
 
-def load_sprite_from_assets(unit_name: str) -> Optional[Image.Image]:
-    filename = f"{unit_name}.png"
-    path = os.path.join(ASSET_DIR, filename)
-    if not os.path.exists(path):
-        return None
-    return Image.open(path).convert("RGBA")
+def load_sprite_from_assets(unit_name: str, image_name: Optional[str] = None) -> Optional[Image.Image]:
+    candidate_filenames: List[str] = []
+    if image_name:
+        candidate_filenames.append(image_name)
+
+    candidate_filenames.append(f"{unit_name}.png")
+    candidate_filenames.append(f"{unit_name.lower()}.png")
+
+    for filename in candidate_filenames:
+        path = os.path.join(ASSET_DIR, filename)
+        if os.path.exists(path):
+            with Image.open(path) as sprite:
+                return sprite.convert("RGBA")
+    return None
 
 
 def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, int, int, int]) -> None:
@@ -451,7 +459,7 @@ def render_battle_map(state: BattleState) -> BytesIO:
         draw_fallback_unit(draw, enemy.coord, (220, 50, 50, 255))
 
     for player in state.players.values():
-        sprite = load_sprite_from_assets(player.name)
+        sprite = load_sprite_from_assets(player.name, player.image_name)
         if sprite is None:
             draw_fallback_unit(draw, player.coord, (50, 120, 220, 255))
             continue
