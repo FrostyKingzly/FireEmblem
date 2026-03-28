@@ -1388,7 +1388,11 @@ class InspectCoordinateModal(discord.ui.Modal, title="Inspect Coordinate"):
 
 class PlaceUnitSelect(discord.ui.Select):
     def __init__(self, prep_view: "PreparationView"):
-        options = [discord.SelectOption(label=name, value=name) for name in prep_view.state.players.keys()]
+        assigned_units = set(prep_view.deployed.values())
+        available_units = [name for name in prep_view.state.players.keys() if name not in assigned_units]
+        if prep_view.selected_unit and prep_view.selected_unit not in assigned_units:
+            available_units.insert(0, prep_view.selected_unit)
+        options = [discord.SelectOption(label=name, value=name) for name in available_units]
         super().__init__(placeholder="Choose a unit", options=options)
         self.prep_view = prep_view
 
@@ -1402,7 +1406,11 @@ class PlaceUnitSelect(discord.ui.Select):
 
 class PlaceSlotSelect(discord.ui.Select):
     def __init__(self, prep_view: "PreparationView"):
-        options = [discord.SelectOption(label=slot, value=slot) for slot in STARTING_POSITIONS]
+        taken_slots = set(prep_view.deployed.keys())
+        available_slots = [slot for slot in STARTING_POSITIONS if slot not in taken_slots]
+        if prep_view.selected_slot and prep_view.selected_slot not in taken_slots:
+            available_slots.insert(0, prep_view.selected_slot)
+        options = [discord.SelectOption(label=slot, value=slot) for slot in available_slots]
         super().__init__(placeholder="Choose a start slot", options=options)
         self.prep_view = prep_view
 
@@ -1429,29 +1437,81 @@ class PlaceUnitsPickerView(discord.ui.View):
 
         unit = self.prep_view.selected_unit
         slot = self.prep_view.selected_slot
-        for existing_slot, existing_unit in list(self.prep_view.deployed.items()):
-            if existing_unit == unit:
-                self.prep_view.deployed.pop(existing_slot)
+        if unit in self.prep_view.deployed.values():
+            await interaction.response.send_message(f"**{unit}** is already assigned. Use Swap to change positions.", ephemeral=True)
+            return
+        if slot in self.prep_view.deployed:
+            await interaction.response.send_message(f"**{slot}** is already taken. Choose an open slot.", ephemeral=True)
+            return
         self.prep_view.deployed[slot] = unit
+        self.prep_view.selected_unit = None
+        self.prep_view.selected_slot = None
 
-        visible_names = set(self.prep_view.deployed.values())
-        for deployed_slot, deployed_unit_name in self.prep_view.deployed.items():
-            self.prep_view.state.players[deployed_unit_name].coord = deployed_slot
-
-        prep_embed = build_preparation_embed(self.prep_view.state, self.prep_view.deployed)
-        img = render_battle_map(
-            self.prep_view.state,
-            show_player_spaces=True,
-            visible_player_names=visible_names,
-        )
-        file = discord.File(img, filename="battle_map.png")
-        prep_embed.set_image(url="attachment://battle_map.png")
-        await self.prep_view.message.edit(
-            embed=prep_embed,
-            attachments=[file],
-            view=self.prep_view,
-        )
+        await self.prep_view.refresh_preparation_message(interaction)
         await interaction.response.edit_message(content=f"Assigned **{unit}** to **{slot}**.", view=self)
+
+
+class SwapUnitSelect(discord.ui.Select):
+    def __init__(self, prep_view: "PreparationView", target: Literal["first", "second"]):
+        assigned_units = sorted(prep_view.deployed.values())
+        options = [discord.SelectOption(label=name, value=name) for name in assigned_units]
+        placeholder = "Choose first assigned unit" if target == "first" else "Choose second assigned unit"
+        super().__init__(placeholder=placeholder, options=options)
+        self.prep_view = prep_view
+        self.target = target
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_value = self.values[0]
+        if self.target == "first":
+            self.prep_view.swap_first_unit = selected_value
+        else:
+            self.prep_view.swap_second_unit = selected_value
+        await interaction.response.edit_message(
+            content=(
+                "Select two assigned units, then press Swap Positions.\n"
+                f"First: **{self.prep_view.swap_first_unit or '—'}** | "
+                f"Second: **{self.prep_view.swap_second_unit or '—'}**"
+            ),
+            view=self.view,
+        )
+
+
+class SwapUnitsPickerView(discord.ui.View):
+    def __init__(self, prep_view: "PreparationView"):
+        super().__init__(timeout=300)
+        self.prep_view = prep_view
+        self.add_item(SwapUnitSelect(prep_view, "first"))
+        self.add_item(SwapUnitSelect(prep_view, "second"))
+
+    @discord.ui.button(label="Swap Positions", style=discord.ButtonStyle.success)
+    async def swap_positions(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        first = self.prep_view.swap_first_unit
+        second = self.prep_view.swap_second_unit
+        if not first or not second:
+            await interaction.response.send_message("Choose both units to swap.", ephemeral=True)
+            return
+        if first == second:
+            await interaction.response.send_message("Choose two different units.", ephemeral=True)
+            return
+
+        first_slot = next((slot for slot, unit_name in self.prep_view.deployed.items() if unit_name == first), None)
+        second_slot = next((slot for slot, unit_name in self.prep_view.deployed.items() if unit_name == second), None)
+        if first_slot is None or second_slot is None:
+            await interaction.response.send_message("Both units must already be assigned.", ephemeral=True)
+            return
+
+        self.prep_view.deployed[first_slot], self.prep_view.deployed[second_slot] = (
+            self.prep_view.deployed[second_slot],
+            self.prep_view.deployed[first_slot],
+        )
+        self.prep_view.swap_first_unit = None
+        self.prep_view.swap_second_unit = None
+
+        await self.prep_view.refresh_preparation_message(interaction)
+        await interaction.response.edit_message(
+            content=f"Swapped **{first}** and **{second}**.",
+            view=self,
+        )
 
 
 class PreparationView(discord.ui.View):
@@ -1462,12 +1522,59 @@ class PreparationView(discord.ui.View):
         self.deployed: Dict[str, str] = {}
         self.selected_unit: Optional[str] = None
         self.selected_slot: Optional[str] = None
+        self.swap_first_unit: Optional[str] = None
+        self.swap_second_unit: Optional[str] = None
+
+    async def refresh_preparation_message(self, interaction: discord.Interaction) -> None:
+        visible_names = set(self.deployed.values())
+        for deployed_slot, deployed_unit_name in self.deployed.items():
+            self.state.players[deployed_unit_name].coord = deployed_slot
+
+        prep_embed = build_preparation_embed(self.state, self.deployed)
+        img = render_battle_map(
+            self.state,
+            show_player_spaces=True,
+            visible_player_names=visible_names,
+        )
+        file = discord.File(img, filename="battle_map.png")
+        prep_embed.set_image(url="attachment://battle_map.png")
+
+        if self.message is None:
+            return
+        current_message: discord.Message = self.message
+        if interaction.channel is not None:
+            current_message = await interaction.channel.fetch_message(self.message.id)
+            self.message = current_message
+
+        await current_message.edit(
+            embed=prep_embed,
+            attachments=[file],
+            view=self,
+        )
 
     @discord.ui.button(label="Place Units", style=discord.ButtonStyle.primary)
     async def place_units(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        remaining_units = len(self.state.players) - len(self.deployed)
+        remaining_slots = len(STARTING_POSITIONS) - len(self.deployed)
+        if remaining_units <= 0 or remaining_slots <= 0:
+            await interaction.response.send_message("All units and slots are already assigned.", ephemeral=True)
+            return
         await interaction.response.send_message(
             "Pick a unit and start slot, then assign.",
             view=PlaceUnitsPickerView(self),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Swap", style=discord.ButtonStyle.secondary)
+    async def swap_units(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if len(self.deployed) < 2:
+            await interaction.response.send_message("Assign at least two units before swapping.", ephemeral=True)
+            return
+        self.swap_first_unit = None
+        self.swap_second_unit = None
+        await interaction.response.send_message(
+            "Select two assigned units, then press Swap Positions.",
+            view=SwapUnitsPickerView(self),
             ephemeral=True,
         )
 
