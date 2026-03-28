@@ -21,6 +21,7 @@ GRID_COLOR = (0, 0, 0, 255)
 BACKGROUND_KEY_DISTANCE = 45
 
 ASSET_DIR = "assets"
+TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "battle2_map.png")
 
 
 @dataclass
@@ -240,6 +241,7 @@ class FireEmblemBot(discord.Client):
 
     async def setup_hook(self) -> None:
         self.tree.add_command(battle)
+        self.tree.add_command(battle2)
         await self.tree.sync()
 
 
@@ -457,6 +459,20 @@ def render_battle_map(state: BattleState) -> BytesIO:
         px = x + (CELL_SIZE - sprite.width) // 2
         py = y + (CELL_SIZE - sprite.height) // 2
         board.alpha_composite(sprite, (px, py))
+
+    buf = BytesIO()
+    board.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+def render_test_map() -> BytesIO:
+    board = create_base_grid()
+    if os.path.exists(TEST_MAP_IMAGE_PATH):
+        test_map = Image.open(TEST_MAP_IMAGE_PATH).convert("RGBA")
+        if test_map.size != board.size:
+            test_map = test_map.resize(board.size, Image.NEAREST)
+        board.alpha_composite(test_map, (0, 0))
 
     buf = BytesIO()
     board.save(buf, format="PNG")
@@ -1068,6 +1084,26 @@ async def battle(interaction: discord.Interaction) -> None:
     state.active_battle_message_id = message.id
     await message.edit(view=BattleView(client, state, message.id))
     await interaction.channel.send(embed=phase_banner_embed("player"))
+
+
+@app_commands.command(name="battle2", description="Show a no-units test map.")
+async def battle2(interaction: discord.Interaction) -> None:
+    img = render_test_map()
+    file = discord.File(img, filename="battle2_map.png")
+    description_lines = [
+        "## Test Map",
+        "### Player Units: **0**",
+        "### Enemy Units: **0**",
+        "",
+        "No enemies or players are spawned on this map.",
+    ]
+    if os.path.exists(TEST_MAP_IMAGE_PATH):
+        description_lines.append("Loaded terrain from `assets/battle2_map.png`.")
+    else:
+        description_lines.append("`assets/battle2_map.png` not found, showing fallback grid.")
+    embed = discord.Embed(title="Fire Emblem Test Map", description="\n".join(description_lines), color=0x5C9E31)
+    embed.set_image(url="attachment://battle2_map.png")
+    await interaction.response.send_message(embed=embed, file=file)
 
 
 def main() -> None:
