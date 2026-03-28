@@ -82,6 +82,13 @@ class Unit:
         return self.inventory[self.equipped_index]
 
 
+@dataclass(frozen=True)
+class CharacterProfile:
+    portrait_image_name: Optional[str] = None
+    critical_quotes: Tuple[str, ...] = ()
+    critical_image_name: Optional[str] = None
+
+
 @dataclass
 class BattleState:
     players: Dict[str, Unit]
@@ -192,6 +199,17 @@ PLAYER_UNITS: List[Unit] = [
         personal_skill="Toxic Tome",
     ),
 ]
+
+CHARACTER_PROFILES: Dict[str, CharacterProfile] = {
+    "Acheron": CharacterProfile(
+        portrait_image_name="acheron.png",
+        critical_quotes=("I weep for the departed.",),
+        critical_image_name="acheron.png",
+    ),
+    "Vander": CharacterProfile(portrait_image_name="vander.png"),
+    "Clanne": CharacterProfile(portrait_image_name="clanne.png"),
+    "Framme": CharacterProfile(portrait_image_name="framme.png"),
+}
 
 ENEMY_UNITS: List[Unit] = [
     Unit(
@@ -440,6 +458,40 @@ def load_sprite_from_assets(unit: Unit) -> Optional[Image.Image]:
         if os.path.exists(path):
             return Image.open(path).convert("RGBA")
     return None
+
+
+def profile_for_unit(unit: Unit) -> CharacterProfile:
+    return CHARACTER_PROFILES.get(unit.name, CharacterProfile(portrait_image_name=unit.image_name))
+
+
+def resolve_asset_for_unit(unit: Unit, *, use_critical_image: bool = False) -> Optional[str]:
+    profile = profile_for_unit(unit)
+    candidate_names: List[str] = []
+    if use_critical_image and profile.critical_image_name:
+        candidate_names.append(profile.critical_image_name)
+    if profile.portrait_image_name:
+        candidate_names.append(profile.portrait_image_name)
+    if unit.image_name:
+        candidate_names.append(unit.image_name)
+    candidate_names.append(f"{unit.name.lower()}.png")
+    candidate_names.append(f"{unit.name}.png")
+
+    seen: Set[str] = set()
+    for filename in candidate_names:
+        if filename in seen:
+            continue
+        seen.add(filename)
+        path = os.path.join(ASSET_DIR, filename)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def random_critical_quote(unit: Unit) -> str:
+    profile = profile_for_unit(unit)
+    if not profile.critical_quotes:
+        return f"{unit.name} strikes with lethal precision!"
+    return random.choice(profile.critical_quotes)
 
 
 def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, int, int, int]) -> None:
@@ -703,7 +755,13 @@ def apply_after_combat_skill(attacker: Unit, defender: Unit, *, lines: List[str]
         lines.append(f"✨ Toxic Tome activates: {defender.name} is poisoned (stacks: {defender.poison_stacks}).")
 
 
-def resolve_combat_round(attacker: Unit, defender: Unit, lines: List[str]) -> bool:
+@dataclass
+class CriticalEvent:
+    attacker: Unit
+    quote: str
+
+
+def resolve_combat_round(attacker: Unit, defender: Unit, lines: List[str], critical_events: List[CriticalEvent]) -> bool:
     hit = calc_hit(attacker, defender)
     crit = calc_crit(attacker, defender)
     if random.randint(1, 100) > hit:
@@ -713,10 +771,13 @@ def resolve_combat_round(attacker: Unit, defender: Unit, lines: List[str]) -> bo
     dmg = calc_damage(attacker, defender)
     critted = random.randint(1, 100) <= crit
     total = dmg * 3 if critted else dmg
+    if critted:
+        critical_index = len(critical_events)
+        critical_events.append(CriticalEvent(attacker=attacker, quote=random_critical_quote(attacker)))
+        lines.append(f"[CRITICAL_EVENT:{critical_index}]")
     defender.current_hp = max(0, defender.current_hp - total)
-    crit_text = " **CRITICAL!**" if critted else ""
     lines.append(
-        f"{attacker.name} hits {defender.name} for **{total}** damage.{crit_text} "
+        f"{attacker.name} hits {defender.name} for **{total}** damage. "
         f"({defender.current_hp}/{defender.stats.hp} HP left)"
     )
     apply_on_hit_effects(attacker, defender, lines=lines)
@@ -750,20 +811,20 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
 
         target = min(targets, key=lambda player: (player.current_hp, manhattan_distance(enemy.coord, player.coord)))
         lines: List[str] = [f"**{enemy.name}** initiates combat against **{target.name}**!"]
-        defender_down = resolve_combat_round(enemy, target, lines)
+        critical_events: List[CriticalEvent] = []
+        defender_down = resolve_combat_round(enemy, target, lines, critical_events)
         if defender_down:
             lines.append(f"💀 {target.name} is defeated!")
             state.players.pop(target.name, None)
             state.moved_this_turn.discard(target.name)
         elif in_weapon_range(target, enemy):
-            attacker_down = resolve_combat_round(target, enemy, lines)
+            attacker_down = resolve_combat_round(target, enemy, lines, critical_events)
             apply_after_combat_skill(target, enemy, lines=lines)
             if attacker_down:
                 lines.append(f"💀 {enemy.name} is defeated!")
                 state.enemies.pop(enemy.name, None)
 
-        public_embed = discord.Embed(title="Battle Log", description="\n".join(lines), color=0xD67F2C)
-        await interaction.channel.send(embed=public_embed)
+        await send_battle_log_sequence(interaction, enemy, lines, critical_events)
         await refresh_battle_message(interaction, state, active_enemy_message)
         if await check_and_finalize_battle(interaction, state):
             return
@@ -819,6 +880,101 @@ def build_prebattle_embed(player: Unit, enemy: Unit) -> discord.Embed:
     return embed
 
 
+def build_heal_forecast_embed(healer: Unit, ally: Unit) -> discord.Embed:
+    amount = heal_amount(healer)
+    healed_hp = min(ally.stats.hp, ally.current_hp + amount)
+    recovered = healed_hp - ally.current_hp
+    embed = discord.Embed(title="Healing Forecast", color=0x1D82B6)
+    embed.add_field(
+        name=f"✨ {healer.name} (Healer)",
+        value="\n".join([
+            f"Staff: **{healer.equipped_weapon.name}**",
+            f"Heal Power: **{amount}**",
+        ]),
+        inline=True,
+    )
+    embed.add_field(
+        name=f"🩹 {ally.name} (Ally)",
+        value="\n".join([
+            f"HP: **{ally.current_hp}/{ally.stats.hp}** → **{healed_hp}/{ally.stats.hp}**",
+            f"Recovered: **{recovered} HP**",
+        ]),
+        inline=True,
+    )
+    return embed
+
+
+def build_battle_log_embed(lines: List[str], initiator: Unit) -> discord.Embed:
+    embed = discord.Embed(title="Battle Log", description="\n".join(lines), color=0xD67F2C)
+    initiator_image = resolve_asset_for_unit(initiator)
+    if initiator_image is not None:
+        filename = os.path.basename(initiator_image)
+        embed.set_thumbnail(url=f"attachment://{filename}")
+    return embed
+
+
+def build_critical_embed(event: CriticalEvent) -> discord.Embed:
+    embed = discord.Embed(
+        title="CRITICAL!",
+        description=event.quote,
+        color=0x9B59B6,
+    )
+    critical_image = resolve_asset_for_unit(event.attacker, use_critical_image=True)
+    if critical_image is not None:
+        filename = os.path.basename(critical_image)
+        embed.set_image(url=f"attachment://{filename}")
+    return embed
+
+
+async def send_embed_with_unit_asset(
+    channel: discord.abc.MessageableChannel,
+    embed: discord.Embed,
+    unit: Unit,
+    *,
+    use_critical_image: bool = False,
+) -> None:
+    asset_path = resolve_asset_for_unit(unit, use_critical_image=use_critical_image)
+    if asset_path is not None:
+        file = discord.File(asset_path, filename=os.path.basename(asset_path))
+        await channel.send(embed=embed, file=file)
+        return
+    await channel.send(embed=embed)
+
+
+async def send_battle_log_sequence(
+    interaction: discord.Interaction,
+    initiator: Unit,
+    lines: List[str],
+    critical_events: List[CriticalEvent],
+) -> None:
+    if not critical_events:
+        await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(lines, initiator), initiator)
+        return
+
+    buffered: List[str] = []
+    for line in lines:
+        if line.startswith("[CRITICAL_EVENT:") and line.endswith("]"):
+            if buffered:
+                await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(buffered, initiator), initiator)
+                buffered = []
+            marker = line.removeprefix("[CRITICAL_EVENT:").removesuffix("]")
+            if marker.isdigit():
+                idx = int(marker)
+                if 0 <= idx < len(critical_events):
+                    event = critical_events[idx]
+                    await send_embed_with_unit_asset(
+                        interaction.channel,
+                        build_critical_embed(event),
+                        event.attacker,
+                        use_critical_image=True,
+                    )
+            continue
+        buffered.append(line)
+
+    if buffered:
+        await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(buffered, initiator), initiator)
+
+
 class HealTargetSelect(discord.ui.Select):
     def __init__(self, state: BattleState, healer_name: str):
         healer = state.players[healer_name]
@@ -835,9 +991,31 @@ class HealTargetSelect(discord.ui.Select):
         self.healer_name = healer_name
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        healer = self.state.players[self.healer_name]
         ally_name = self.values[0]
-        ally = self.state.players[ally_name]
+        await interaction.response.edit_message(
+            content=f"Selected {ally_name} for healing.",
+            embed=build_heal_forecast_embed(self.state.players[self.healer_name], self.state.players[ally_name]),
+            view=HealForecastView(self.state, self.healer_name, ally_name),
+        )
+
+
+class HealTargetView(discord.ui.View):
+    def __init__(self, state: BattleState, healer_name: str):
+        super().__init__(timeout=180)
+        self.add_item(HealTargetSelect(state, healer_name))
+
+
+class HealForecastView(discord.ui.View):
+    def __init__(self, state: BattleState, healer_name: str, ally_name: str):
+        super().__init__(timeout=180)
+        self.state = state
+        self.healer_name = healer_name
+        self.ally_name = ally_name
+
+    @discord.ui.button(label="Heal", style=discord.ButtonStyle.success)
+    async def heal(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        healer = self.state.players[self.healer_name]
+        ally = self.state.players[self.ally_name]
         amount = heal_amount(healer)
         before = ally.current_hp
         ally.current_hp = min(ally.stats.hp, ally.current_hp + amount)
@@ -852,11 +1030,13 @@ class HealTargetSelect(discord.ui.Select):
             battle_message = await interaction.channel.fetch_message(active_message_id)
             await refresh_battle_message(interaction, self.state, battle_message)
 
-
-class HealTargetView(discord.ui.View):
-    def __init__(self, state: BattleState, healer_name: str):
-        super().__init__(timeout=180)
-        self.add_item(HealTargetSelect(state, healer_name))
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="Choose an ally to heal.",
+            embed=None,
+            view=HealTargetView(self.state, self.healer_name),
+        )
 
 
 class WeaponSelect(discord.ui.Select):
@@ -883,6 +1063,35 @@ class WeaponSelectView(discord.ui.View):
         self.add_item(WeaponSelect(state, player_name, enemy_name, start_coord))
 
 
+class AttackTargetSelect(discord.ui.Select):
+    def __init__(self, state: BattleState, player_name: str, start_coord: str):
+        player = state.players[player_name]
+        options: List[discord.SelectOption] = []
+        for enemy in state.enemies.values():
+            if in_weapon_range(player, enemy):
+                options.append(discord.SelectOption(label=enemy.name, value=enemy.name))
+        super().__init__(placeholder="Choose enemy to attack", options=options)
+        self.state = state
+        self.player_name = player_name
+        self.start_coord = start_coord
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        enemy_name = self.values[0]
+        player = self.state.players[self.player_name]
+        enemy = self.state.enemies[enemy_name]
+        await interaction.response.edit_message(
+            content=f"Selected target: **{enemy_name}**",
+            embed=build_prebattle_embed(player, enemy),
+            view=PreBattleView(self.state, self.player_name, enemy_name, self.start_coord),
+        )
+
+
+class AttackTargetView(discord.ui.View):
+    def __init__(self, state: BattleState, player_name: str, start_coord: str):
+        super().__init__(timeout=180)
+        self.add_item(AttackTargetSelect(state, player_name, start_coord))
+
+
 class PreBattleView(discord.ui.View):
     def __init__(self, state: BattleState, player_name: str, enemy_name: str, start_coord: str):
         super().__init__(timeout=300)
@@ -899,13 +1108,14 @@ class PreBattleView(discord.ui.View):
         player = self.state.players[self.player_name]
         enemy = self.state.enemies[self.enemy_name]
         lines: List[str] = [f"**{player.name}** initiates combat against **{enemy.name}**!"]
+        critical_events: List[CriticalEvent] = []
 
-        defender_down = resolve_combat_round(player, enemy, lines)
+        defender_down = resolve_combat_round(player, enemy, lines, critical_events)
         if defender_down:
             lines.append(f"💀 {enemy.name} is defeated!")
             self.state.enemies.pop(enemy.name, None)
         elif in_weapon_range(enemy, player):
-            attacker_down = resolve_combat_round(enemy, player, lines)
+            attacker_down = resolve_combat_round(enemy, player, lines, critical_events)
             if attacker_down:
                 lines.append(f"💀 {player.name} is defeated!")
                 self.state.players.pop(player.name, None)
@@ -916,8 +1126,7 @@ class PreBattleView(discord.ui.View):
         self.state.moved_this_turn.add(self.player_name)
         await interaction.response.edit_message(content="Combat resolved.", embed=None, view=None)
 
-        public_embed = discord.Embed(title="Battle Log", description="\n".join(lines), color=0xD67F2C)
-        await interaction.channel.send(embed=public_embed)
+        await send_battle_log_sequence(interaction, player, lines, critical_events)
 
         active_message_id = self.state.active_battle_message_id
         if active_message_id is not None:
@@ -962,6 +1171,7 @@ class DirectionView(discord.ui.View):
         self.start_coord = state.players[unit_name].coord
         self.preview_coord = self.start_coord
         self.steps_taken = 0
+        self.path: List[str] = [self.start_coord]
 
     @property
     def movement_cap(self) -> int:
@@ -985,6 +1195,7 @@ class DirectionView(discord.ui.View):
 
         self.preview_coord = candidate
         self.steps_taken += 1
+        self.path.append(candidate)
         await interaction.response.edit_message(
             content=(
                 f"{self.unit_name} preview position: `{self.preview_coord}` "
@@ -1009,6 +1220,35 @@ class DirectionView(discord.ui.View):
     async def down(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self._shift(interaction, "down")
 
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
+    async def back_step(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if len(self.path) <= 1:
+            await interaction.response.send_message("No previous movement step to reverse.", ephemeral=True)
+            return
+        self.path.pop()
+        self.preview_coord = self.path[-1]
+        self.steps_taken = len(self.path) - 1
+        await interaction.response.edit_message(
+            content=(
+                f"{self.unit_name} preview position: `{self.preview_coord}` "
+                f"({self.steps_taken}/{self.movement_cap} mov)"
+            ),
+            view=self,
+        )
+
+    @discord.ui.button(label="Reset", style=discord.ButtonStyle.secondary)
+    async def reset_path(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.preview_coord = self.start_coord
+        self.steps_taken = 0
+        self.path = [self.start_coord]
+        await interaction.response.edit_message(
+            content=(
+                f"{self.unit_name} preview reset to start: `{self.preview_coord}` "
+                f"({self.steps_taken}/{self.movement_cap} mov)"
+            ),
+            view=self,
+        )
+
     @discord.ui.button(label="Confirm", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         blocked = occupied_coords(self.state, ignore_player=self.unit_name)
@@ -1032,8 +1272,9 @@ class DirectionView(discord.ui.View):
         if player.equipped_weapon.kind == "staff":
             heal_targets = [ally for ally in self.state.players.values() if ally.name != player.name and ally.current_hp < ally.stats.hp and in_weapon_range(player, ally)]
             if heal_targets:
+                target_names = ", ".join(ally.name for ally in heal_targets)
                 await interaction.followup.send(
-                    "Choose an adjacent ally to heal.",
+                    f"Allies in staff range: **{target_names}**. Pick a target to view healing forecast.",
                     view=HealTargetView(self.state, self.unit_name),
                     ephemeral=True,
                 )
@@ -1043,12 +1284,10 @@ class DirectionView(discord.ui.View):
 
         in_range_enemies = [enemy for enemy in self.state.enemies.values() if in_weapon_range(player, enemy)]
         if in_range_enemies:
-            enemy = in_range_enemies[0]
-            embed = build_prebattle_embed(player, enemy)
+            target_names = ", ".join(enemy.name for enemy in in_range_enemies)
             await interaction.followup.send(
-                "Enemy in range. Attack?",
-                embed=embed,
-                view=PreBattleView(self.state, self.unit_name, enemy.name, self.start_coord),
+                f"Enemies in range: **{target_names}**. Pick a target to view combat forecast.",
+                view=AttackTargetView(self.state, self.unit_name, self.start_coord),
                 ephemeral=True,
             )
             return
