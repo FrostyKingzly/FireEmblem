@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import random
 from collections import deque
@@ -10,6 +11,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw
+
+logger = logging.getLogger(__name__)
 
 # 12x12 map with A-L columns and 1-12 rows.
 GRID_COLUMNS = [chr(ord("A") + i) for i in range(12)]
@@ -1792,6 +1795,18 @@ class DirectionView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
 
+    async def _safe_edit_message(self, interaction: discord.Interaction, **kwargs: object) -> None:
+        try:
+            await interaction.response.edit_message(**kwargs)
+        except discord.NotFound as exc:
+            if getattr(exc, "code", None) == 10062:
+                logger.warning(
+                    "Skipping stale Discord interaction while updating DirectionView for %s.",
+                    self.unit_name,
+                )
+                return
+            raise
+
     async def _shift(self, interaction: discord.Interaction, direction: str) -> None:
         if self.steps_taken >= self.movement_cap:
             await interaction.response.send_message(
@@ -1822,7 +1837,8 @@ class DirectionView(discord.ui.View):
         self.steps_taken = new_steps
         self.path.append(candidate)
         file, embed = self.preview_file_and_embed()
-        await interaction.response.edit_message(
+        await self._safe_edit_message(
+            interaction,
             content=f"Moving {self.unit_name}. Use direction buttons then Confirm.",
             embed=embed,
             attachments=[file],
@@ -1854,7 +1870,8 @@ class DirectionView(discord.ui.View):
         self.preview_coord = self.path[-1]
         self.steps_taken = sum(terrain_movement_cost(self.state, tile) for tile in self.path[1:])
         file, embed = self.preview_file_and_embed()
-        await interaction.response.edit_message(
+        await self._safe_edit_message(
+            interaction,
             content=f"Moving {self.unit_name}. Use direction buttons then Confirm.",
             embed=embed,
             attachments=[file],
@@ -1867,7 +1884,8 @@ class DirectionView(discord.ui.View):
         self.steps_taken = 0
         self.path = [self.start_coord]
         file, embed = self.preview_file_and_embed()
-        await interaction.response.edit_message(
+        await self._safe_edit_message(
+            interaction,
             content=f"Moving {self.unit_name}. Use direction buttons then Confirm.",
             embed=embed,
             attachments=[file],
@@ -1889,7 +1907,11 @@ class DirectionView(discord.ui.View):
             return
 
         self.state.players[self.unit_name].coord = self.preview_coord
-        await interaction.response.edit_message(content=f"Confirmed {self.unit_name} to `{self.preview_coord}`.", view=None)
+        await self._safe_edit_message(
+            interaction,
+            content=f"Confirmed {self.unit_name} to `{self.preview_coord}`.",
+            view=None,
+        )
         active_message_id = self.state.active_battle_message_id
         if active_message_id is None:
             await interaction.followup.send("Unable to refresh battle map message.", ephemeral=True)
