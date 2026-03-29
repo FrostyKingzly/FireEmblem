@@ -27,9 +27,13 @@ BACKGROUND_ASSET_PATH = os.path.join(ASSET_DIR, "backgrounds", "background.png")
 CHARACTER_ASSET_DIR = os.path.join(ASSET_DIR, "characters")
 ENEMY_ASSET_DIR = os.path.join(ASSET_DIR, "enemies")
 BATTLE_SCENE_SIZE = (1280, 720)
-BATTLE_SCENE_PLAYER_X = 260
-BATTLE_SCENE_ENEMY_X = 820
-BATTLE_SCENE_COMBATANT_Y = 120
+BATTLE_SCENE_GRID_COLUMNS = 14
+BATTLE_SCENE_GRID_ROWS = 6
+BATTLE_SCENE_MELEE_PLAYER_RIGHT_PLANE = "F"
+BATTLE_SCENE_MELEE_ENEMY_LEFT_PLANE = "H"
+BATTLE_SCENE_RANGED_PLAYER_RIGHT_PLANE = "D"
+BATTLE_SCENE_RANGED_ENEMY_LEFT_PLANE = "J"
+BATTLE_SCENE_FOOTING_ROW = 5.5
 TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "battle2_map.png")
 STARTING_POSITIONS = ["1A", "1B", "2A", "2B"]
 
@@ -563,8 +567,16 @@ def render_battle_scene(attacker: Unit, defender: Unit) -> Optional[BytesIO]:
     player_sprite = Image.open(player_asset).convert("RGBA")
     enemy_sprite = Image.open(enemy_asset).convert("RGBA")
 
-    scene.alpha_composite(player_sprite, (BATTLE_SCENE_PLAYER_X, BATTLE_SCENE_COMBATANT_Y))
-    scene.alpha_composite(enemy_sprite, (BATTLE_SCENE_ENEMY_X, BATTLE_SCENE_COMBATANT_Y))
+    combat_distance = manhattan_distance(attacker.coord, defender.coord)
+    player_pos, enemy_pos = calculate_battle_scene_positions(
+        scene_size=scene.size,
+        player_sprite_size=player_sprite.size,
+        enemy_sprite_size=enemy_sprite.size,
+        ranged=combat_distance >= 2,
+    )
+
+    scene.alpha_composite(player_sprite, player_pos)
+    scene.alpha_composite(enemy_sprite, enemy_pos)
 
     output = BytesIO()
     scene.save(output, format="PNG")
@@ -577,6 +589,44 @@ def prepare_sprite_for_board(unit: Unit, sprite: Image.Image, *, enemy_sprite_si
     if unit.name in ENEMY_UNITS_BY_NAME and sprite_rgba.size != enemy_sprite_size:
         sprite_rgba = sprite_rgba.resize(enemy_sprite_size, Image.Resampling.LANCZOS)
     return sprite_rgba
+
+
+def battle_scene_plane_x(scene_width: int, plane: str) -> int:
+    plane_index = ord(plane.upper()) - ord("A")
+    plane_index = max(0, min(BATTLE_SCENE_GRID_COLUMNS - 1, plane_index))
+    cell_width = scene_width / BATTLE_SCENE_GRID_COLUMNS
+    return round(plane_index * cell_width)
+
+
+def battle_scene_footing_y(scene_height: int) -> int:
+    cell_height = scene_height / BATTLE_SCENE_GRID_ROWS
+    return round(BATTLE_SCENE_FOOTING_ROW * cell_height)
+
+
+def calculate_battle_scene_positions(
+    *,
+    scene_size: Tuple[int, int],
+    player_sprite_size: Tuple[int, int],
+    enemy_sprite_size: Tuple[int, int],
+    ranged: bool,
+) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    scene_width, scene_height = scene_size
+    player_width, player_height = player_sprite_size
+    enemy_width, enemy_height = enemy_sprite_size
+
+    if ranged:
+        player_plane = BATTLE_SCENE_RANGED_PLAYER_RIGHT_PLANE
+        enemy_plane = BATTLE_SCENE_RANGED_ENEMY_LEFT_PLANE
+    else:
+        player_plane = BATTLE_SCENE_MELEE_PLAYER_RIGHT_PLANE
+        enemy_plane = BATTLE_SCENE_MELEE_ENEMY_LEFT_PLANE
+
+    player_x = battle_scene_plane_x(scene_width, player_plane) - player_width
+    enemy_x = battle_scene_plane_x(scene_width, enemy_plane)
+    footing_y = battle_scene_footing_y(scene_height)
+    player_y = footing_y - player_height
+    enemy_y = footing_y - enemy_height
+    return (player_x, player_y), (enemy_x, enemy_y)
 
 
 def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, int, int, int]) -> None:
@@ -906,6 +956,8 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
         target = min(targets, key=lambda player: (player.current_hp, manhattan_distance(enemy.coord, player.coord)))
         lines: List[str] = [f"**{enemy.name}** initiates combat against **{target.name}**!"]
         critical_events: List[CriticalEvent] = []
+        player_pre_hp = target.current_hp
+        enemy_pre_hp = enemy.current_hp
         defender_down = resolve_combat_round(enemy, target, lines, critical_events)
         if defender_down:
             lines.append(f"💀 {target.name} is defeated!")
@@ -918,7 +970,15 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
                 lines.append(f"💀 {enemy.name} is defeated!")
                 state.enemies.pop(enemy.name, None)
 
-        await send_action_log_sequence(interaction, enemy, target, lines, critical_events)
+        await send_action_log_sequence(
+            interaction,
+            enemy,
+            target,
+            lines,
+            critical_events,
+            player_pre_hp=player_pre_hp,
+            enemy_pre_hp=enemy_pre_hp,
+        )
         await refresh_battle_message(interaction, state, active_enemy_message)
         if await check_and_finalize_battle(interaction, state):
             return
@@ -1024,15 +1084,23 @@ def build_critical_embed(event: CriticalEvent) -> discord.Embed:
     return embed
 
 
-def build_battle_scene_embed(attacker: Unit, defender: Unit) -> discord.Embed:
+def build_battle_scene_embed(
+    attacker: Unit,
+    defender: Unit,
+    *,
+    player_hp_override: Optional[int] = None,
+    enemy_hp_override: Optional[int] = None,
+) -> discord.Embed:
     player_unit = attacker if attacker.name in PLAYER_UNITS_BY_NAME else defender
     enemy_unit = defender if player_unit is attacker else attacker
+    player_hp = player_unit.current_hp if player_hp_override is None else player_hp_override
+    enemy_hp = enemy_unit.current_hp if enemy_hp_override is None else enemy_hp_override
     embed = discord.Embed(title="Battle Scene", color=0x1D82B6)
     embed.add_field(
         name=f"⚔️ {player_unit.name} (Player)",
         value="\n".join([
             f"Weapon: **{player_unit.equipped_weapon.name}**",
-            f"HP: **{player_unit.current_hp}/{player_unit.stats.hp}** {hp_bar(player_unit.current_hp, player_unit.stats.hp)}",
+            f"HP: **{player_hp}/{player_unit.stats.hp}** {hp_bar(player_hp, player_unit.stats.hp)}",
             "",
             f"Dmg: **{calc_damage(player_unit, enemy_unit)}**",
             f"Hit: **{calc_hit(player_unit, enemy_unit)}%**",
@@ -1044,7 +1112,7 @@ def build_battle_scene_embed(attacker: Unit, defender: Unit) -> discord.Embed:
         name=f"🛡️ {enemy_unit.name} (Enemy)",
         value="\n".join([
             f"Weapon: **{enemy_unit.equipped_weapon.name}**",
-            f"HP: **{enemy_unit.current_hp}/{enemy_unit.stats.hp}** {hp_bar(enemy_unit.current_hp, enemy_unit.stats.hp)}",
+            f"HP: **{enemy_hp}/{enemy_unit.stats.hp}** {hp_bar(enemy_hp, enemy_unit.stats.hp)}",
             "",
             f"Dmg: **{calc_damage(enemy_unit, player_unit)}**",
             f"Hit: **{calc_hit(enemy_unit, player_unit)}%**",
@@ -1084,11 +1152,24 @@ async def send_action_log_sequence(
     defender: Unit,
     lines: List[str],
     critical_events: List[CriticalEvent],
+    *,
+    player_pre_hp: Optional[int] = None,
+    enemy_pre_hp: Optional[int] = None,
 ) -> None:
+    player_unit = attacker if attacker.name in PLAYER_UNITS_BY_NAME else defender
+    enemy_unit = defender if player_unit is attacker else attacker
+    scene_player_hp = player_unit.current_hp if player_pre_hp is None else player_pre_hp
+    scene_enemy_hp = enemy_unit.current_hp if enemy_pre_hp is None else enemy_pre_hp
+
     battle_scene = render_battle_scene(attacker, defender)
     if battle_scene is not None:
         await interaction.channel.send(
-            embed=build_battle_scene_embed(attacker, defender),
+            embed=build_battle_scene_embed(
+                attacker,
+                defender,
+                player_hp_override=scene_player_hp,
+                enemy_hp_override=scene_enemy_hp,
+            ),
             file=discord.File(battle_scene, filename="battle_scene.png"),
         )
 
@@ -1277,6 +1358,8 @@ class PreBattleView(discord.ui.View):
         enemy = self.state.enemies[self.enemy_name]
         lines: List[str] = [f"**{player.name}** initiates combat against **{enemy.name}**!"]
         critical_events: List[CriticalEvent] = []
+        player_pre_hp = player.current_hp
+        enemy_pre_hp = enemy.current_hp
 
         defender_down = resolve_combat_round(player, enemy, lines, critical_events)
         if defender_down:
@@ -1294,7 +1377,15 @@ class PreBattleView(discord.ui.View):
         self.state.moved_this_turn.add(self.player_name)
         await interaction.response.edit_message(content="Combat resolved.", embed=None, view=None)
 
-        await send_action_log_sequence(interaction, player, enemy, lines, critical_events)
+        await send_action_log_sequence(
+            interaction,
+            player,
+            enemy,
+            lines,
+            critical_events,
+            player_pre_hp=player_pre_hp,
+            enemy_pre_hp=enemy_pre_hp,
+        )
 
         active_message_id = self.state.active_battle_message_id
         if active_message_id is not None:
