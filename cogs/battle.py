@@ -2036,10 +2036,14 @@ class UnitSelect(discord.ui.Select):
         self.battle_message_id = battle_message_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        # Acknowledge immediately so expensive map preview rendering cannot expire
+        # the interaction token (Discord 404/10062 Unknown interaction).
+        await interaction.response.defer()
+
         unit_name = self.values[0]
         view = DirectionView(self.state, unit_name, self.battle_message_id)
         file, embed = view.preview_file_and_embed()
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"Moving {unit_name}. Use direction buttons then Confirm.",
             embed=embed,
             attachments=[file],
