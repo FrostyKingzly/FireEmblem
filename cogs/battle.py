@@ -265,6 +265,7 @@ ENEMY_UNITS: List[Unit] = [
     ),
 ]
 
+PLAYER_UNITS_BY_NAME: Set[str] = {unit.name for unit in PLAYER_UNITS}
 ENEMY_UNITS_BY_NAME: Set[str] = {unit.name for unit in ENEMY_UNITS}
 
 
@@ -508,15 +509,15 @@ def resolve_battle_scene_character_asset(unit: Unit) -> Optional[str]:
     candidate_names.append(f"{unit.name.lower()}_battle.png")
 
     for filename in candidate_names:
-        path = os.path.join(CHARACTER_ASSET_DIR, filename)
-        if os.path.exists(path):
+        path = resolve_asset_case_insensitive(CHARACTER_ASSET_DIR, filename)
+        if path is not None:
             return path
     return None
 
 
 def resolve_battle_scene_enemy_asset(unit: Unit) -> Optional[str]:
-    explicit_enemy = os.path.join(ENEMY_ASSET_DIR, "enemy.png")
-    if os.path.exists(explicit_enemy):
+    explicit_enemy = resolve_asset_case_insensitive(ENEMY_ASSET_DIR, "enemy.png")
+    if explicit_enemy is not None:
         return explicit_enemy
 
     candidate_names = [
@@ -525,21 +526,37 @@ def resolve_battle_scene_enemy_asset(unit: Unit) -> Optional[str]:
         "enemy.png",
     ]
     for filename in candidate_names:
-        path = os.path.join(ENEMY_ASSET_DIR, filename)
-        if os.path.exists(path):
+        path = resolve_asset_case_insensitive(ENEMY_ASSET_DIR, filename)
+        if path is not None:
             return path
     return None
 
 
+def resolve_asset_case_insensitive(directory: str, filename: str) -> Optional[str]:
+    exact_path = os.path.join(directory, filename)
+    if os.path.exists(exact_path):
+        return exact_path
+    if not os.path.isdir(directory):
+        return None
+    target = filename.casefold()
+    for entry in os.listdir(directory):
+        if entry.casefold() == target:
+            return os.path.join(directory, entry)
+    return None
+
+
 def render_battle_scene(attacker: Unit, defender: Unit) -> Optional[BytesIO]:
-    if not os.path.exists(BACKGROUND_ASSET_PATH):
+    background_path = resolve_asset_case_insensitive(os.path.dirname(BACKGROUND_ASSET_PATH), os.path.basename(BACKGROUND_ASSET_PATH))
+    if background_path is None:
         return None
 
-    background = Image.open(BACKGROUND_ASSET_PATH).convert("RGBA")
+    background = Image.open(background_path).convert("RGBA")
     scene = background.resize(BATTLE_SCENE_SIZE, Image.Resampling.LANCZOS)
 
-    player_asset = resolve_battle_scene_character_asset(attacker)
-    enemy_asset = resolve_battle_scene_enemy_asset(defender)
+    player_unit = attacker if attacker.name in PLAYER_UNITS_BY_NAME else defender
+    enemy_unit = defender if player_unit is attacker else attacker
+    player_asset = resolve_battle_scene_character_asset(player_unit)
+    enemy_asset = resolve_battle_scene_enemy_asset(enemy_unit)
     if player_asset is None or enemy_asset is None:
         return None
 
@@ -1008,28 +1025,30 @@ def build_critical_embed(event: CriticalEvent) -> discord.Embed:
 
 
 def build_battle_scene_embed(attacker: Unit, defender: Unit) -> discord.Embed:
+    player_unit = attacker if attacker.name in PLAYER_UNITS_BY_NAME else defender
+    enemy_unit = defender if player_unit is attacker else attacker
     embed = discord.Embed(title="Battle Scene", color=0x1D82B6)
     embed.add_field(
-        name=f"⚔️ {attacker.name} (Player)",
+        name=f"⚔️ {player_unit.name} (Player)",
         value="\n".join([
-            f"Weapon: **{attacker.equipped_weapon.name}**",
-            f"HP: **{attacker.current_hp}/{attacker.stats.hp}** {hp_bar(attacker.current_hp, attacker.stats.hp)}",
+            f"Weapon: **{player_unit.equipped_weapon.name}**",
+            f"HP: **{player_unit.current_hp}/{player_unit.stats.hp}** {hp_bar(player_unit.current_hp, player_unit.stats.hp)}",
             "",
-            f"Dmg: **{calc_damage(attacker, defender)}**",
-            f"Hit: **{calc_hit(attacker, defender)}%**",
-            f"Crit: **{calc_crit(attacker, defender)}%**",
+            f"Dmg: **{calc_damage(player_unit, enemy_unit)}**",
+            f"Hit: **{calc_hit(player_unit, enemy_unit)}%**",
+            f"Crit: **{calc_crit(player_unit, enemy_unit)}%**",
         ]),
         inline=True,
     )
     embed.add_field(
-        name=f"🛡️ {defender.name} (Enemy)",
+        name=f"🛡️ {enemy_unit.name} (Enemy)",
         value="\n".join([
-            f"Weapon: **{defender.equipped_weapon.name}**",
-            f"HP: **{defender.current_hp}/{defender.stats.hp}** {hp_bar(defender.current_hp, defender.stats.hp)}",
+            f"Weapon: **{enemy_unit.equipped_weapon.name}**",
+            f"HP: **{enemy_unit.current_hp}/{enemy_unit.stats.hp}** {hp_bar(enemy_unit.current_hp, enemy_unit.stats.hp)}",
             "",
-            f"Dmg: **{calc_damage(defender, attacker)}**",
-            f"Hit: **{calc_hit(defender, attacker)}%**",
-            f"Crit: **{calc_crit(defender, attacker)}%**",
+            f"Dmg: **{calc_damage(enemy_unit, player_unit)}**",
+            f"Hit: **{calc_hit(enemy_unit, player_unit)}%**",
+            f"Crit: **{calc_crit(enemy_unit, player_unit)}%**",
         ]),
         inline=True,
     )
