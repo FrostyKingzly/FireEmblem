@@ -1675,6 +1675,28 @@ class PreparationView(discord.ui.View):
         self.swap_first_unit: Optional[str] = None
         self.swap_second_unit: Optional[str] = None
 
+    def auto_assign_all_units(self) -> Tuple[bool, str]:
+        assigned_units = set(self.deployed.values())
+        unassigned_units = [name for name in self.state.players.keys() if name not in assigned_units]
+        available_slots = [slot for slot in STARTING_POSITIONS if slot not in self.deployed]
+
+        if not unassigned_units:
+            return False, "All player units are already assigned."
+        if len(available_slots) < len(unassigned_units):
+            return (
+                False,
+                (
+                    "Not enough open start slots to auto assign all players "
+                    f"({len(unassigned_units)} units, {len(available_slots)} slots)."
+                ),
+            )
+
+        for slot, unit_name in zip(available_slots, unassigned_units):
+            self.deployed[slot] = unit_name
+        self.selected_unit = None
+        self.selected_slot = None
+        return True, f"Auto assigned {len(unassigned_units)} unit(s) to open start slots."
+
     async def refresh_preparation_message(self, interaction: discord.Interaction) -> None:
         visible_names = set(self.deployed.values())
         for deployed_slot, deployed_unit_name in self.deployed.items():
@@ -1714,6 +1736,16 @@ class PreparationView(discord.ui.View):
             view=PlaceUnitsPickerView(self),
             ephemeral=True,
         )
+
+    @discord.ui.button(label="Auto", style=discord.ButtonStyle.primary)
+    async def auto_assign(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        updated, message = self.auto_assign_all_units()
+        if not updated:
+            await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        await self.refresh_preparation_message(interaction)
+        await interaction.response.send_message(message, ephemeral=True)
 
     @discord.ui.button(label="Swap", style=discord.ButtonStyle.secondary)
     async def swap_units(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
