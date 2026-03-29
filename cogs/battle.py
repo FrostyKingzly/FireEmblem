@@ -23,6 +23,13 @@ BACKGROUND_KEY_DISTANCE = 45
 ENEMY_SPRITE_SIZE = (81, 103)
 
 ASSET_DIR = "assets"
+BACKGROUND_ASSET_PATH = os.path.join(ASSET_DIR, "backgrounds", "background.png")
+CHARACTER_ASSET_DIR = os.path.join(ASSET_DIR, "characters")
+ENEMY_ASSET_DIR = os.path.join(ASSET_DIR, "enemies")
+BATTLE_SCENE_SIZE = (1280, 720)
+BATTLE_SCENE_PLAYER_X = 260
+BATTLE_SCENE_ENEMY_X = 820
+BATTLE_SCENE_COMBATANT_Y = 120
 TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "battle2_map.png")
 STARTING_POSITIONS = ["1A", "1B", "2A", "2B"]
 
@@ -493,6 +500,61 @@ def random_critical_quote(unit: Unit) -> str:
     return random.choice(profile.critical_quotes)
 
 
+def resolve_battle_scene_character_asset(unit: Unit) -> Optional[str]:
+    candidate_names: List[str] = []
+    if unit.name == "Acheron":
+        candidate_names.append("acheron_battle.png")
+    candidate_names.append(f"{unit.name.lower().replace(' ', '_')}_battle.png")
+    candidate_names.append(f"{unit.name.lower()}_battle.png")
+
+    for filename in candidate_names:
+        path = os.path.join(CHARACTER_ASSET_DIR, filename)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def resolve_battle_scene_enemy_asset(unit: Unit) -> Optional[str]:
+    explicit_enemy = os.path.join(ENEMY_ASSET_DIR, "enemy.png")
+    if os.path.exists(explicit_enemy):
+        return explicit_enemy
+
+    candidate_names = [
+        f"{unit.name.lower().replace(' ', '_')}.png",
+        f"{unit.name.lower()}.png",
+        "enemy.png",
+    ]
+    for filename in candidate_names:
+        path = os.path.join(ENEMY_ASSET_DIR, filename)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def render_battle_scene(attacker: Unit, defender: Unit) -> Optional[BytesIO]:
+    if not os.path.exists(BACKGROUND_ASSET_PATH):
+        return None
+
+    background = Image.open(BACKGROUND_ASSET_PATH).convert("RGBA")
+    scene = background.resize(BATTLE_SCENE_SIZE, Image.Resampling.LANCZOS)
+
+    player_asset = resolve_battle_scene_character_asset(attacker)
+    enemy_asset = resolve_battle_scene_enemy_asset(defender)
+    if player_asset is None or enemy_asset is None:
+        return None
+
+    player_sprite = Image.open(player_asset).convert("RGBA")
+    enemy_sprite = Image.open(enemy_asset).convert("RGBA")
+
+    scene.alpha_composite(player_sprite, (BATTLE_SCENE_PLAYER_X, BATTLE_SCENE_COMBATANT_Y))
+    scene.alpha_composite(enemy_sprite, (BATTLE_SCENE_ENEMY_X, BATTLE_SCENE_COMBATANT_Y))
+
+    output = BytesIO()
+    scene.save(output, format="PNG")
+    output.seek(0)
+    return output
+
+
 def prepare_sprite_for_board(unit: Unit, sprite: Image.Image, *, enemy_sprite_size: Tuple[int, int] = ENEMY_SPRITE_SIZE) -> Image.Image:
     sprite_rgba = sprite.convert("RGBA")
     if unit.name in ENEMY_UNITS_BY_NAME and sprite_rgba.size != enemy_sprite_size:
@@ -839,7 +901,7 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
                 lines.append(f"💀 {enemy.name} is defeated!")
                 state.enemies.pop(enemy.name, None)
 
-        await send_battle_log_sequence(interaction, enemy, lines, critical_events)
+        await send_battle_log_sequence(interaction, enemy, target, lines, critical_events)
         await refresh_battle_message(interaction, state, active_enemy_message)
         if await check_and_finalize_battle(interaction, state):
             return
@@ -945,6 +1007,36 @@ def build_critical_embed(event: CriticalEvent) -> discord.Embed:
     return embed
 
 
+def build_battle_scene_embed(attacker: Unit, defender: Unit) -> discord.Embed:
+    embed = discord.Embed(title="Battle Scene", color=0x1D82B6)
+    embed.add_field(
+        name=f"⚔️ {attacker.name} (Player)",
+        value="\n".join([
+            f"Weapon: **{attacker.equipped_weapon.name}**",
+            f"HP: **{attacker.current_hp}/{attacker.stats.hp}** {hp_bar(attacker.current_hp, attacker.stats.hp)}",
+            "",
+            f"Dmg: **{calc_damage(attacker, defender)}**",
+            f"Hit: **{calc_hit(attacker, defender)}%**",
+            f"Crit: **{calc_crit(attacker, defender)}%**",
+        ]),
+        inline=True,
+    )
+    embed.add_field(
+        name=f"🛡️ {defender.name} (Enemy)",
+        value="\n".join([
+            f"Weapon: **{defender.equipped_weapon.name}**",
+            f"HP: **{defender.current_hp}/{defender.stats.hp}** {hp_bar(defender.current_hp, defender.stats.hp)}",
+            "",
+            f"Dmg: **{calc_damage(defender, attacker)}**",
+            f"Hit: **{calc_hit(defender, attacker)}%**",
+            f"Crit: **{calc_crit(defender, attacker)}%**",
+        ]),
+        inline=True,
+    )
+    embed.set_image(url="attachment://battle_scene.png")
+    return embed
+
+
 async def send_embed_with_unit_asset(
     channel: discord.abc.Messageable,
     embed: discord.Embed,
@@ -962,19 +1054,27 @@ async def send_embed_with_unit_asset(
 
 async def send_battle_log_sequence(
     interaction: discord.Interaction,
-    initiator: Unit,
+    attacker: Unit,
+    defender: Unit,
     lines: List[str],
     critical_events: List[CriticalEvent],
 ) -> None:
+    battle_scene = render_battle_scene(attacker, defender)
+    if battle_scene is not None:
+        await interaction.channel.send(
+            embed=build_battle_scene_embed(attacker, defender),
+            file=discord.File(battle_scene, filename="battle_scene.png"),
+        )
+
     if not critical_events:
-        await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(lines, initiator), initiator)
+        await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(lines, attacker), attacker)
         return
 
     buffered: List[str] = []
     for line in lines:
         if line.startswith("[CRITICAL_EVENT:") and line.endswith("]"):
             if buffered:
-                await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(buffered, initiator), initiator)
+                await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(buffered, attacker), attacker)
                 buffered = []
             marker = line.removeprefix("[CRITICAL_EVENT:").removesuffix("]")
             if marker.isdigit():
@@ -991,7 +1091,7 @@ async def send_battle_log_sequence(
         buffered.append(line)
 
     if buffered:
-        await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(buffered, initiator), initiator)
+        await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(buffered, attacker), attacker)
 
 
 class HealTargetSelect(discord.ui.Select):
@@ -1145,7 +1245,7 @@ class PreBattleView(discord.ui.View):
         self.state.moved_this_turn.add(self.player_name)
         await interaction.response.edit_message(content="Combat resolved.", embed=None, view=None)
 
-        await send_battle_log_sequence(interaction, player, lines, critical_events)
+        await send_battle_log_sequence(interaction, player, enemy, lines, critical_events)
 
         active_message_id = self.state.active_battle_message_id
         if active_message_id is not None:
