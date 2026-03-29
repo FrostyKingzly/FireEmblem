@@ -2358,8 +2358,9 @@ class PreparationView(discord.ui.View):
             await interaction.response.send_message(message, ephemeral=True)
             return
 
+        await interaction.response.defer(ephemeral=True, thinking=False)
         await self.refresh_preparation_message(interaction)
-        await interaction.response.send_message(message, ephemeral=True)
+        await interaction.followup.send(message, ephemeral=True)
 
     @discord.ui.button(label="Swap", style=discord.ButtonStyle.secondary)
     async def swap_units(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
