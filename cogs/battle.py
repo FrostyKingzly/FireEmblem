@@ -2420,14 +2420,15 @@ class BattleCog(commands.Cog):
         channel_id = interaction.channel_id if interaction.channel_id is not None else 0
         self.battles[channel_id] = state
 
+        await interaction.response.defer(thinking=True)
+
         img = render_battle_map(state, show_player_spaces=True, visible_player_names=set())
         file = discord.File(img, filename="battle_map.png")
         prep_view = PreparationView(state)
         embed = build_preparation_embed(state, prep_view.deployed)
         embed.set_image(url="attachment://battle_map.png")
 
-        await interaction.response.send_message(embed=embed, file=file, view=prep_view)
-        message = await interaction.original_response()
+        message = await interaction.followup.send(embed=embed, file=file, view=prep_view, wait=True)
         prep_view.message = message
         await message.edit(view=prep_view)
 
@@ -2444,6 +2445,8 @@ class BattleCog(commands.Cog):
         channel_id = interaction.channel_id if interaction.channel_id is not None else 0
         self.battles[channel_id] = state
 
+        await interaction.response.defer(thinking=True)
+
         img = render_battle_map(state, show_player_spaces=True, visible_player_names=set())
         file = discord.File(img, filename="battle_map.png")
         prep_view = PreparationView(state)
@@ -2451,8 +2454,7 @@ class BattleCog(commands.Cog):
         embed.title = "Fire Emblem Mock Battle 2"
         embed.set_image(url="attachment://battle_map.png")
 
-        await interaction.response.send_message(embed=embed, file=file, view=prep_view)
-        message = await interaction.original_response()
+        message = await interaction.followup.send(embed=embed, file=file, view=prep_view, wait=True)
         prep_view.message = message
         await message.edit(view=prep_view)
 
