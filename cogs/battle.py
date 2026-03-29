@@ -20,6 +20,7 @@ BOARD_PADDING = 4
 BOARD_BG = (216, 216, 216, 255)
 GRID_COLOR = (0, 0, 0, 255)
 BACKGROUND_KEY_DISTANCE = 45
+ENEMY_SPRITE_SIZE = (81, 103)
 
 ASSET_DIR = "assets"
 TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "battle2_map.png")
@@ -221,6 +222,7 @@ ENEMY_UNITS: List[Unit] = [
         "Unknown",
         UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
         "12L",
+        image_name="enemy.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
@@ -230,6 +232,7 @@ ENEMY_UNITS: List[Unit] = [
         "Unknown",
         UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
         "12K",
+        image_name="enemy.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
@@ -239,6 +242,7 @@ ENEMY_UNITS: List[Unit] = [
         "Unknown",
         UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
         "11L",
+        image_name="enemy.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
@@ -248,10 +252,13 @@ ENEMY_UNITS: List[Unit] = [
         "Unknown",
         UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
         "11K",
+        image_name="enemy.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
 ]
+
+ENEMY_UNITS_BY_NAME: Set[str] = {unit.name for unit in ENEMY_UNITS}
 
 
 def coord_to_xy(coord: str) -> Tuple[int, int]:
@@ -484,6 +491,13 @@ def random_critical_quote(unit: Unit) -> str:
     return random.choice(profile.critical_quotes)
 
 
+def prepare_sprite_for_board(unit: Unit, sprite: Image.Image, *, enemy_sprite_size: Tuple[int, int] = ENEMY_SPRITE_SIZE) -> Image.Image:
+    sprite_rgba = sprite.convert("RGBA")
+    if unit.name in ENEMY_UNITS_BY_NAME and sprite_rgba.size != enemy_sprite_size:
+        sprite_rgba = sprite_rgba.resize(enemy_sprite_size, Image.Resampling.LANCZOS)
+    return sprite_rgba
+
+
 def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, int, int, int]) -> None:
     x, y = cell_origin(coord)
     cx = x + CELL_SIZE // 2
@@ -512,7 +526,15 @@ def render_battle_map(
             )
 
     for enemy in state.enemies.values():
-        draw_fallback_unit(draw, enemy.coord, (220, 50, 50, 255))
+        sprite = load_sprite_from_assets(enemy)
+        if sprite is None:
+            draw_fallback_unit(draw, enemy.coord, (220, 50, 50, 255))
+            continue
+        sprite = prepare_sprite_for_board(enemy, sprite)
+        x, y = cell_origin(enemy.coord)
+        px = x + (CELL_SIZE - sprite.width) // 2
+        py = y + (CELL_SIZE - sprite.height) // 2
+        board.alpha_composite(sprite, (px, py))
 
     for player in state.players.values():
         if visible_player_names is not None and player.name not in visible_player_names:
@@ -521,6 +543,7 @@ def render_battle_map(
         if sprite is None:
             draw_fallback_unit(draw, player.coord, (50, 120, 220, 255))
             continue
+        sprite = prepare_sprite_for_board(player, sprite)
         x, y = cell_origin(player.coord)
         px = x + (CELL_SIZE - sprite.width) // 2
         py = y + (CELL_SIZE - sprite.height) // 2
