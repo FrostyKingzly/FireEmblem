@@ -702,6 +702,7 @@ def render_battle_map(
     visible_player_names: Optional[Set[str]] = None,
     highlight_move_coords: Optional[Set[str]] = None,
     highlight_action_coords: Optional[Set[str]] = None,
+    highlight_ally_coords: Optional[Set[str]] = None,
     action_color: Tuple[int, int, int, int] = (220, 38, 38, 100),
     action_outline: Tuple[int, int, int, int] = (153, 27, 27, 255),
 ) -> BytesIO:
@@ -735,6 +736,16 @@ def render_battle_map(
                 [(x, y), (x + CELL_SIZE - BOARD_PADDING * 2, y + CELL_SIZE - BOARD_PADDING * 2)],
                 fill=action_color,
                 outline=action_outline,
+                width=4,
+            )
+
+    if highlight_ally_coords:
+        for coord in sorted(highlight_ally_coords):
+            x, y = cell_origin(coord)
+            draw.rectangle(
+                [(x, y), (x + CELL_SIZE - BOARD_PADDING * 2, y + CELL_SIZE - BOARD_PADDING * 2)],
+                fill=(22, 163, 74, 115),
+                outline=(21, 128, 61, 255),
                 width=4,
             )
 
@@ -1581,10 +1592,16 @@ class DirectionView(discord.ui.View):
         original_coord = unit.coord
         unit.coord = self.preview_coord
         try:
+            allies_in_range = {
+                ally.coord
+                for ally in self.state.players.values()
+                if ally.name != unit.name and in_weapon_range(unit, ally)
+            }
             img = render_battle_map(
                 self.state,
                 highlight_move_coords=move_tiles,
                 highlight_action_coords=action_tiles,
+                highlight_ally_coords=allies_in_range,
                 action_color=action_color,
                 action_outline=action_outline,
             )
@@ -1715,7 +1732,96 @@ class DirectionView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        await interaction.followup.send("No enemies in range. You can move this unit again or choose End phase.", ephemeral=True)
+        await interaction.followup.send(
+            f"**{player.name}** will move here.",
+            view=NoEnemyActionView(self.state, self.unit_name, self.start_coord),
+            ephemeral=True,
+        )
+
+
+class PostMoveInventorySelect(discord.ui.Select):
+    def __init__(self, state: BattleState, unit_name: str, start_coord: str):
+        unit = state.players[unit_name]
+        options: List[discord.SelectOption] = []
+        for idx, weapon in enumerate(unit.inventory):
+            equipped = " (Equipped)" if idx == unit.equipped_index else ""
+            options.append(discord.SelectOption(label=f"Equip: {weapon.name}{equipped}", value=str(idx)))
+        super().__init__(placeholder="Choose gear to equip", options=options)
+        self.state = state
+        self.unit_name = unit_name
+        self.start_coord = start_coord
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        unit = self.state.players[self.unit_name]
+        new_index = int(self.values[0])
+        unit.equipped_index = new_index
+        await interaction.response.edit_message(
+            content=f"Equipped **{unit.inventory[new_index].name}** on **{unit.name}**.",
+            view=PostMoveInventoryView(self.state, self.unit_name, self.start_coord),
+        )
+
+
+class PostMoveInventoryView(discord.ui.View):
+    def __init__(self, state: BattleState, unit_name: str, start_coord: str):
+        super().__init__(timeout=180)
+        self.state = state
+        self.unit_name = unit_name
+        self.start_coord = start_coord
+        self.add_item(PostMoveInventorySelect(state, unit_name, start_coord))
+
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        unit = self.state.players[self.unit_name]
+        await interaction.response.edit_message(
+            content=f"**{unit.name}** will move here.",
+            view=NoEnemyActionView(self.state, self.unit_name, self.start_coord),
+        )
+
+
+class NoEnemyActionView(discord.ui.View):
+    def __init__(self, state: BattleState, unit_name: str, start_coord: str):
+        super().__init__(timeout=240)
+        self.state = state
+        self.unit_name = unit_name
+        self.start_coord = start_coord
+
+    @discord.ui.button(label="Wait", style=discord.ButtonStyle.success)
+    async def wait(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        self.state.moved_this_turn.add(self.unit_name)
+        await interaction.response.edit_message(
+            content=f"**{self.unit_name}** waits and ends their turn.",
+            embed=None,
+            view=None,
+        )
+        active_message_id = self.state.active_battle_message_id
+        if active_message_id is not None:
+            battle_message = await interaction.channel.fetch_message(active_message_id)
+            await refresh_battle_message(interaction, self.state, battle_message)
+        if self.state.phase == "player" and len(self.state.moved_this_turn) >= len(self.state.players):
+            await interaction.followup.send("All remaining player units acted. Ending Player Phase.", ephemeral=True)
+            if active_message_id is not None:
+                battle_message = await interaction.channel.fetch_message(active_message_id)
+                await run_enemy_phase(interaction, self.state, battle_message)
+
+    @discord.ui.button(label="Items", style=discord.ButtonStyle.primary)
+    async def items(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        unit = self.state.players[self.unit_name]
+        await interaction.response.edit_message(
+            content=f"Choose inventory for **{unit.name}** (equip weapon; usable items coming soon).",
+            embed=None,
+            view=PostMoveInventoryView(self.state, self.unit_name, self.start_coord),
+        )
+
+    @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        player = self.state.players.get(self.unit_name)
+        if player is not None:
+            player.coord = self.start_coord
+        await interaction.response.edit_message(content="Movement undone. Reposition your unit.", embed=None, view=None)
+        active_message_id = self.state.active_battle_message_id
+        if active_message_id is not None:
+            battle_message = await interaction.channel.fetch_message(active_message_id)
+            await refresh_battle_message(interaction, self.state, battle_message)
 
 
 class PickUnitView(discord.ui.View):
