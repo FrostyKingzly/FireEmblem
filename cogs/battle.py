@@ -71,6 +71,7 @@ class Weapon:
     heal_power: int = 0
     inflicts_poison: bool = False
     crit_multiplier: float = 1.0
+    targets_allies: bool = False
 
 
 @dataclass
@@ -165,7 +166,7 @@ WEAPONS: Dict[str, Weapon] = {
     "Killing Edge": Weapon(name="Killing Edge", might=9, hit=75, crit=30, weight=10, rng_min=1, rng_max=1, crit_multiplier=1.5),
     "Iron Dagger": Weapon(name="Iron Dagger", might=5, hit=100, crit=0, weight=3, rng_min=1, rng_max=2, inflicts_poison=True),
     "Fire": Weapon(name="Fire", might=5, hit=95, crit=0, weight=4, rng_min=1, rng_max=2, kind="tome"),
-    "Heal": Weapon(name="Heal", might=0, hit=100, crit=0, weight=0, rng_min=1, rng_max=1, kind="staff", heal_power=10),
+    "Heal": Weapon(name="Heal", might=0, hit=100, crit=0, weight=0, rng_min=1, rng_max=1, kind="staff", heal_power=10, targets_allies=True),
     # Stored tome examples so future users inherit the correct range data model.
     "Thunder": Weapon(name="Thunder", might=5, hit=80, crit=0, weight=10, rng_min=1, rng_max=3, kind="tome"),
     "Wind": Weapon(name="Wind", might=4, hit=90, crit=0, weight=4, rng_min=1, rng_max=2, kind="tome"),
@@ -383,6 +384,57 @@ def occupied_coords(state: BattleState, *, ignore_player: Optional[str] = None, 
         if enemy.name != ignore_enemy:
             occupied.add(enemy.coord)
     return occupied
+
+
+def in_bounds(row: int, col: int) -> bool:
+    return 1 <= row <= GRID_SIZE and 1 <= col <= GRID_SIZE
+
+
+def weapon_targets_allies(unit: Unit) -> bool:
+    weapon = unit.equipped_weapon
+    return weapon.targets_allies or weapon.kind == "staff"
+
+
+def movement_range(state: BattleState, unit: Unit) -> Set[str]:
+    reachable: Set[str] = {unit.coord}
+    blocked = occupied_coords(state, ignore_player=unit.name, ignore_enemy=unit.name)
+    start_row, start_col = coord_to_xy(unit.coord)
+    for row in range(1, GRID_SIZE + 1):
+        for col in range(1, GRID_SIZE + 1):
+            distance = abs(start_row - row) + abs(start_col - col)
+            if distance > unit.stats.mov:
+                continue
+            coord = xy_to_coord(row, col)
+            if coord in blocked:
+                continue
+            reachable.add(coord)
+    return reachable
+
+
+def weapon_range_from_origins(origins: Set[str], weapon: Weapon) -> Set[str]:
+    ranged_tiles: Set[str] = set()
+    for origin in origins:
+        origin_row, origin_col = coord_to_xy(origin)
+        for row in range(1, GRID_SIZE + 1):
+            for col in range(1, GRID_SIZE + 1):
+                if not in_bounds(row, col):
+                    continue
+                distance = abs(origin_row - row) + abs(origin_col - col)
+                if weapon.rng_min <= distance <= weapon.rng_max:
+                    ranged_tiles.add(xy_to_coord(row, col))
+    return ranged_tiles
+
+
+def movement_and_action_ranges(state: BattleState, unit: Unit) -> Tuple[Set[str], Set[str], bool]:
+    move_tiles = movement_range(state, unit)
+    action_tiles = weapon_range_from_origins(move_tiles, unit.equipped_weapon)
+    action_tiles -= move_tiles
+    return move_tiles, action_tiles, weapon_targets_allies(unit)
+
+
+def full_threat_range(state: BattleState, unit: Unit) -> Set[str]:
+    move_tiles = movement_range(state, unit)
+    return weapon_range_from_origins(move_tiles, unit.equipped_weapon)
 
 
 def create_base_grid() -> Image.Image:
@@ -648,6 +700,10 @@ def render_battle_map(
     *,
     show_player_spaces: bool = False,
     visible_player_names: Optional[Set[str]] = None,
+    highlight_move_coords: Optional[Set[str]] = None,
+    highlight_action_coords: Optional[Set[str]] = None,
+    action_color: Tuple[int, int, int, int] = (220, 38, 38, 100),
+    action_outline: Tuple[int, int, int, int] = (153, 27, 27, 255),
 ) -> BytesIO:
     board = create_base_grid()
     draw = ImageDraw.Draw(board)
@@ -659,6 +715,26 @@ def render_battle_map(
                 [(x, y), (x + CELL_SIZE - BOARD_PADDING * 2, y + CELL_SIZE - BOARD_PADDING * 2)],
                 fill=(59, 130, 246, 90),
                 outline=(30, 64, 175, 255),
+                width=4,
+            )
+
+    if highlight_move_coords:
+        for coord in sorted(highlight_move_coords):
+            x, y = cell_origin(coord)
+            draw.rectangle(
+                [(x, y), (x + CELL_SIZE - BOARD_PADDING * 2, y + CELL_SIZE - BOARD_PADDING * 2)],
+                fill=(56, 189, 248, 90),
+                outline=(2, 132, 199, 255),
+                width=4,
+            )
+
+    if highlight_action_coords:
+        for coord in sorted(highlight_action_coords):
+            x, y = cell_origin(coord)
+            draw.rectangle(
+                [(x, y), (x + CELL_SIZE - BOARD_PADDING * 2, y + CELL_SIZE - BOARD_PADDING * 2)],
+                fill=action_color,
+                outline=action_outline,
                 width=4,
             )
 
@@ -780,6 +856,40 @@ def build_inspect_embed(state: BattleState, coord: str) -> discord.Embed:
             "",
             occupant_text,
         ]
+    )
+    return embed
+
+
+def build_movement_preview_embed(
+    unit: Unit,
+    *,
+    preview_coord: str,
+    steps_taken: int,
+    movement_cap: int,
+    support_range: bool,
+) -> discord.Embed:
+    action_color_text = "🟩 Green = ally-target range" if support_range else "🟥 Red = enemy-target range"
+    embed = discord.Embed(title=f"Move: {unit.name}", color=0x1D82B6)
+    embed.description = "\n".join(
+        [
+            f"Preview tile: **{preview_coord}**",
+            f"Movement used: **{steps_taken}/{movement_cap}**",
+            "",
+            "🟦 Light blue = reachable movement tiles",
+            action_color_text,
+        ]
+    )
+    return embed
+
+
+def build_inspect_range_embed(state: BattleState, coord: str, inspected_unit: Optional[Unit]) -> discord.Embed:
+    embed = build_inspect_embed(state, coord)
+    if inspected_unit is None:
+        return embed
+    embed.add_field(
+        name="Range Overlay",
+        value=f"Showing **{inspected_unit.name}** full threat range in red.",
+        inline=False,
     )
     return embed
 
@@ -1459,6 +1569,29 @@ class DirectionView(discord.ui.View):
     def movement_cap(self) -> int:
         return self.state.players[self.unit_name].stats.mov
 
+    def preview_file_and_embed(self) -> Tuple[discord.File, discord.Embed]:
+        unit = self.state.players[self.unit_name]
+        move_tiles, action_tiles, is_support = movement_and_action_ranges(self.state, unit)
+        action_color = (22, 163, 74, 100) if is_support else (220, 38, 38, 100)
+        action_outline = (21, 128, 61, 255) if is_support else (153, 27, 27, 255)
+        img = render_battle_map(
+            self.state,
+            highlight_move_coords=move_tiles,
+            highlight_action_coords=action_tiles,
+            action_color=action_color,
+            action_outline=action_outline,
+        )
+        file = discord.File(img, filename="movement_preview.png")
+        embed = build_movement_preview_embed(
+            unit,
+            preview_coord=self.preview_coord,
+            steps_taken=self.steps_taken,
+            movement_cap=self.movement_cap,
+            support_range=is_support,
+        )
+        embed.set_image(url="attachment://movement_preview.png")
+        return file, embed
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return True
 
@@ -1478,11 +1611,11 @@ class DirectionView(discord.ui.View):
         self.preview_coord = candidate
         self.steps_taken += 1
         self.path.append(candidate)
+        file, embed = self.preview_file_and_embed()
         await interaction.response.edit_message(
-            content=(
-                f"{self.unit_name} preview position: `{self.preview_coord}` "
-                f"({self.steps_taken}/{self.movement_cap} mov)"
-            ),
+            content=f"Moving {self.unit_name}. Use direction buttons then Confirm.",
+            embed=embed,
+            attachments=[file],
             view=self,
         )
 
@@ -1510,11 +1643,11 @@ class DirectionView(discord.ui.View):
         self.path.pop()
         self.preview_coord = self.path[-1]
         self.steps_taken = len(self.path) - 1
+        file, embed = self.preview_file_and_embed()
         await interaction.response.edit_message(
-            content=(
-                f"{self.unit_name} preview position: `{self.preview_coord}` "
-                f"({self.steps_taken}/{self.movement_cap} mov)"
-            ),
+            content=f"Moving {self.unit_name}. Use direction buttons then Confirm.",
+            embed=embed,
+            attachments=[file],
             view=self,
         )
 
@@ -1523,11 +1656,11 @@ class DirectionView(discord.ui.View):
         self.preview_coord = self.start_coord
         self.steps_taken = 0
         self.path = [self.start_coord]
+        file, embed = self.preview_file_and_embed()
         await interaction.response.edit_message(
-            content=(
-                f"{self.unit_name} preview reset to start: `{self.preview_coord}` "
-                f"({self.steps_taken}/{self.movement_cap} mov)"
-            ),
+            content=f"Moving {self.unit_name}. Use direction buttons then Confirm.",
+            embed=embed,
+            attachments=[file],
             view=self,
         )
 
@@ -1596,7 +1729,13 @@ class UnitSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         unit_name = self.values[0]
         view = DirectionView(self.state, unit_name, self.battle_message_id)
-        await interaction.response.edit_message(content=f"Moving {unit_name}. Use direction buttons then Confirm.", view=view)
+        file, embed = view.preview_file_and_embed()
+        await interaction.response.edit_message(
+            content=f"Moving {unit_name}. Use direction buttons then Confirm.",
+            embed=embed,
+            attachments=[file],
+            view=view,
+        )
 
 
 class BattleView(discord.ui.View):
@@ -1678,7 +1817,28 @@ class InspectCoordinateModal(discord.ui.Modal, title="Inspect Coordinate"):
             await interaction.response.send_message("Coordinate is out of map bounds.", ephemeral=True)
             return
         coord = f"{row}{col_letter}"
-        await interaction.response.send_message(embed=build_inspect_embed(self.state, coord), ephemeral=True)
+        inspected_unit: Optional[Unit] = None
+        for player in self.state.players.values():
+            if player.coord == coord:
+                inspected_unit = player
+                break
+        if inspected_unit is None:
+            for enemy in self.state.enemies.values():
+                if enemy.coord == coord:
+                    inspected_unit = enemy
+                    break
+
+        highlight_coords = full_threat_range(self.state, inspected_unit) if inspected_unit is not None else None
+        img = render_battle_map(
+            self.state,
+            highlight_action_coords=highlight_coords,
+            action_color=(220, 38, 38, 100),
+            action_outline=(153, 27, 27, 255),
+        )
+        file = discord.File(img, filename="inspect_range.png")
+        embed = build_inspect_range_embed(self.state, coord, inspected_unit)
+        embed.set_image(url="attachment://inspect_range.png")
+        await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
 
 
 class PlaceUnitSelect(discord.ui.Select):
