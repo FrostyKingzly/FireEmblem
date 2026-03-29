@@ -43,7 +43,35 @@ BATTLE_SCENE_FOOTING_ROW = 5.5
 BATTLE_SCENE_ENEMY_FORWARD_OFFSET_STEPS = 1.0
 BATTLE_SCENE_ENEMY_UPWARD_OFFSET_STEPS = 0.0
 TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "battle2_map.png")
-STARTING_POSITIONS = ["1A", "1B", "2A", "2B"]
+STARTING_POSITIONS = ["11G", "11H", "12G", "12H"]
+
+TERRAIN_PLAINS = "Plains"
+TERRAIN_WOODS = "Woods"
+TERRAIN_WATER = "Water"
+TERRAIN_CLIFF = "Cliff"
+
+WOODS_MOVEMENT_COST = 2
+WOODS_AVOID_BONUS = 30
+
+WATER_TILES: Set[str] = {
+    "6A", "6B", "6C", "6D",
+    "7C", "7D",
+    "8C", "8D", "8E", "8F", "8I", "8J", "8K", "8L",
+}
+
+CLIFF_TILES: Set[str] = {
+    "1C", "1D", "2C", "2D",
+    "3K", "3L", "4K", "4L",
+    "5A", "5B", "5C", "5D",
+    "7E", "7F", "7I", "7J", "7K", "7L",
+}
+
+WOODS_TILES: Set[str] = {
+    "1K", "1L", "2K", "2L",
+    "9I", "9J", "10J",
+    "11C", "11D", "12C", "12D",
+}
+
 
 
 @dataclass
@@ -241,7 +269,7 @@ ENEMY_UNITS: List[Unit] = [
         1,
         "Sword Fighter",
         CLASS_BASE_STATS["Sword Fighter"],
-        "12L",
+        "1G",
         image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
@@ -251,7 +279,7 @@ ENEMY_UNITS: List[Unit] = [
         1,
         "Sword Fighter",
         CLASS_BASE_STATS["Sword Fighter"],
-        "12K",
+        "3B",
         image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
@@ -261,7 +289,7 @@ ENEMY_UNITS: List[Unit] = [
         1,
         "Sword Fighter",
         CLASS_BASE_STATS["Sword Fighter"],
-        "11L",
+        "3J",
         image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
@@ -271,11 +299,32 @@ ENEMY_UNITS: List[Unit] = [
         1,
         "Sword Fighter",
         CLASS_BASE_STATS["Sword Fighter"],
-        "11K",
+        "6E",
         image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
+    Unit(
+        "Sword Fighter 5",
+        1,
+        "Sword Fighter",
+        CLASS_BASE_STATS["Sword Fighter"],
+        "6G",
+        image_name="sword_fighter.png",
+        behavior="aggressive",
+        inventory=[WEAPONS["Iron Sword"]],
+    ),
+    Unit(
+        "Sword Fighter 6",
+        1,
+        "Sword Fighter",
+        CLASS_BASE_STATS["Sword Fighter"],
+        "9A",
+        image_name="sword_fighter.png",
+        behavior="aggressive",
+        inventory=[WEAPONS["Iron Sword"]],
+    ),
+
 ]
 
 PLAYER_UNITS_BY_NAME: Set[str] = {unit.name for unit in PLAYER_UNITS}
@@ -332,7 +381,7 @@ def attack_speed(unit: Unit) -> int:
 
 def calc_hit(attacker: Unit, defender: Unit) -> int:
     hit = attacker.equipped_weapon.hit + (attacker.stats.dex * 2) + (attacker.stats.luck // 2)
-    avoid = (attack_speed(defender) * 2) + defender.stats.luck
+    avoid = (attack_speed(defender) * 2) + defender.stats.luck + terrain_avoid_bonus(defender.coord)
     return clamp(hit - avoid, 0, 100)
 
 
@@ -396,24 +445,72 @@ def in_bounds(row: int, col: int) -> bool:
     return 1 <= row <= GRID_SIZE and 1 <= col <= GRID_SIZE
 
 
+def terrain_at(coord: str) -> str:
+    if coord in WOODS_TILES:
+        return TERRAIN_WOODS
+    if coord in WATER_TILES:
+        return TERRAIN_WATER
+    if coord in CLIFF_TILES:
+        return TERRAIN_CLIFF
+    return TERRAIN_PLAINS
+
+
+def terrain_avoid_bonus(coord: str) -> int:
+    return WOODS_AVOID_BONUS if terrain_at(coord) == TERRAIN_WOODS else 0
+
+
+def terrain_movement_cost(coord: str) -> int:
+    if terrain_at(coord) == TERRAIN_WOODS:
+        return WOODS_MOVEMENT_COST
+    return 1
+
+
+def is_traversable(coord: str, unit: Unit) -> bool:
+    # Flying units are not implemented yet; infantry cannot enter water or cliffs.
+    return terrain_at(coord) not in {TERRAIN_WATER, TERRAIN_CLIFF}
+
+
 def weapon_targets_allies(unit: Unit) -> bool:
     weapon = unit.equipped_weapon
     return weapon.targets_allies or weapon.kind == "staff"
 
 
 def movement_range(state: BattleState, unit: Unit) -> Set[str]:
-    reachable: Set[str] = {unit.coord}
     blocked = occupied_coords(state, ignore_player=unit.name, ignore_enemy=unit.name)
-    start_row, start_col = coord_to_xy(unit.coord)
-    for row in range(1, GRID_SIZE + 1):
-        for col in range(1, GRID_SIZE + 1):
-            distance = abs(start_row - row) + abs(start_col - col)
-            if distance > unit.stats.mov:
+    reachable: Set[str] = {unit.coord}
+    best_cost: Dict[str, int] = {unit.coord: 0}
+    queue: deque[str] = deque([unit.coord])
+
+    while queue:
+        current = queue.popleft()
+        current_row, current_col = coord_to_xy(current)
+        current_cost = best_cost[current]
+
+        for d_row, d_col in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            next_row = current_row + d_row
+            next_col = current_col + d_col
+            if not in_bounds(next_row, next_col):
                 continue
-            coord = xy_to_coord(row, col)
-            if coord in blocked:
+
+            next_coord = xy_to_coord(next_row, next_col)
+            if next_coord in blocked:
                 continue
-            reachable.add(coord)
+            if not is_traversable(next_coord, unit):
+                continue
+
+            step_cost = terrain_movement_cost(next_coord)
+            next_cost = current_cost + step_cost
+            if next_cost > unit.stats.mov:
+                continue
+
+            prior_cost = best_cost.get(next_coord)
+            if prior_cost is not None and prior_cost <= next_cost:
+                continue
+
+            best_cost[next_coord] = next_cost
+            reachable.add(next_coord)
+            queue.append(next_coord)
+
     return reachable
 
 
@@ -880,7 +977,7 @@ def build_preparation_embed(state: BattleState, deployed: Dict[str, str]) -> dis
 
 
 def build_inspect_embed(state: BattleState, coord: str) -> discord.Embed:
-    terrain_name = "Plains"
+    terrain_name = terrain_at(coord)
     occupant_text = "No unit on this tile."
     for player in state.players.values():
         if player.coord == coord:
