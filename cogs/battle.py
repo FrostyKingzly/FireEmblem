@@ -42,7 +42,7 @@ BATTLE_SCENE_RANGED_ENEMY_LEFT_PLANE = "L"
 BATTLE_SCENE_FOOTING_ROW = 5.5
 BATTLE_SCENE_ENEMY_FORWARD_OFFSET_STEPS = 1.0
 BATTLE_SCENE_ENEMY_UPWARD_OFFSET_STEPS = 0.0
-TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "battle2_map.png")
+TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "backgrounds", "battle2_map.png")
 STARTING_POSITIONS = ["1A", "1B", "2A", "2B"]
 BATTLE2_STARTING_POSITIONS = ["11G", "11H", "12G", "12H"]
 
@@ -512,9 +512,21 @@ def full_threat_range(state: BattleState, unit: Unit) -> Set[str]:
     return weapon_range_from_origins(move_tiles, unit.equipped_weapon)
 
 
-def create_base_grid() -> Image.Image:
+def resolve_board_background_path(state: BattleState) -> Optional[str]:
+    if not state.terrain:
+        return None
+    return resolve_asset_case_insensitive(os.path.dirname(TEST_MAP_IMAGE_PATH), os.path.basename(TEST_MAP_IMAGE_PATH))
+
+
+def create_base_grid(*, background_path: Optional[str] = None) -> Image.Image:
     side = GRID_SIZE * CELL_SIZE + GRID_LINE_WIDTH
-    img = Image.new("RGBA", (side, side), BOARD_BG)
+    if background_path:
+        map_image = Image.open(background_path).convert("RGBA")
+        if map_image.size != (side, side):
+            map_image = map_image.resize((side, side), Image.Resampling.LANCZOS)
+        img = map_image
+    else:
+        img = Image.new("RGBA", (side, side), BOARD_BG)
     draw = ImageDraw.Draw(img)
     for i in range(GRID_SIZE + 1):
         p = i * CELL_SIZE
@@ -805,7 +817,7 @@ def render_battle_map(
     action_color: Tuple[int, int, int, int] = (220, 38, 38, 100),
     action_outline: Tuple[int, int, int, int] = (153, 27, 27, 255),
 ) -> BytesIO:
-    board = create_base_grid()
+    board = create_base_grid(background_path=resolve_board_background_path(state))
     draw = ImageDraw.Draw(board)
 
     if show_player_spaces:
@@ -881,12 +893,8 @@ def render_battle_map(
 
 
 def render_test_map() -> BytesIO:
-    board = create_base_grid()
-    if os.path.exists(TEST_MAP_IMAGE_PATH):
-        test_map = Image.open(TEST_MAP_IMAGE_PATH).convert("RGBA")
-        if test_map.size != board.size:
-            test_map = test_map.resize(board.size, Image.NEAREST)
-        board.alpha_composite(test_map, (0, 0))
+    background_path = resolve_asset_case_insensitive(os.path.dirname(TEST_MAP_IMAGE_PATH), os.path.basename(TEST_MAP_IMAGE_PATH))
+    board = create_base_grid(background_path=background_path)
 
     buf = BytesIO()
     board.save(buf, format="PNG")
