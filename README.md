@@ -34,6 +34,12 @@ If a file is missing, the renderer draws a fallback colored token for that unit.
 
 The renderer scales each sprite to ~45% of its original dimensions to fit cells.
 
+For `/battle2`, place the full map artwork at:
+
+- `assets/backgrounds/battle2_map.png`
+
+The board renderer will automatically resize it to the 12x12 grid canvas and draw grid lines over it.
+
 3. Set your bot token:
 
 ```bash

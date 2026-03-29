@@ -42,36 +42,38 @@ BATTLE_SCENE_RANGED_ENEMY_LEFT_PLANE = "L"
 BATTLE_SCENE_FOOTING_ROW = 5.5
 BATTLE_SCENE_ENEMY_FORWARD_OFFSET_STEPS = 1.0
 BATTLE_SCENE_ENEMY_UPWARD_OFFSET_STEPS = 0.0
-TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "battle2_map.png")
-STARTING_POSITIONS = ["11G", "11H", "12G", "12H"]
+TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "backgrounds", "battle2_map.png")
+STARTING_POSITIONS = ["1A", "1B", "2A", "2B"]
+BATTLE2_STARTING_POSITIONS = ["11G", "11H", "12G", "12H"]
 
-TERRAIN_PLAINS = "Plains"
-TERRAIN_WOODS = "Woods"
-TERRAIN_WATER = "Water"
-TERRAIN_CLIFF = "Cliff"
+TERRAIN_PLAINS = "plains"
+TERRAIN_WOODS = "woods"
+TERRAIN_WATER = "water"
+TERRAIN_CLIFFS = "cliffs"
 
-WOODS_MOVEMENT_COST = 2
-WOODS_AVOID_BONUS = 30
-
-WATER_TILES: Set[str] = {
-    "6A", "6B", "6C", "6D",
-    "7C", "7D",
-    "8C", "8D", "8E", "8F", "8I", "8J", "8K", "8L",
+TERRAIN_INFO = {
+    TERRAIN_PLAINS: {"name": "Plains", "mov_cost": 1, "avoid": 0, "infantry_passable": True},
+    TERRAIN_WOODS: {"name": "Woods", "mov_cost": 2, "avoid": 30, "infantry_passable": True},
+    TERRAIN_WATER: {"name": "Water", "mov_cost": 2, "avoid": 0, "infantry_passable": False},
+    TERRAIN_CLIFFS: {"name": "Cliffs", "mov_cost": 1, "avoid": 0, "infantry_passable": False},
 }
 
-CLIFF_TILES: Set[str] = {
-    "1C", "1D", "2C", "2D",
-    "3K", "3L", "4K", "4L",
-    "5A", "5B", "5C", "5D",
-    "7E", "7F", "7I", "7J", "7K", "7L",
+BATTLE2_TERRAIN: Dict[str, str] = {
+    "1C": TERRAIN_CLIFFS, "1D": TERRAIN_CLIFFS, "1K": TERRAIN_WOODS, "1L": TERRAIN_WOODS,
+    "2C": TERRAIN_CLIFFS, "2D": TERRAIN_CLIFFS, "2K": TERRAIN_WOODS, "2L": TERRAIN_WOODS,
+    "3K": TERRAIN_CLIFFS, "3L": TERRAIN_CLIFFS,
+    "4K": TERRAIN_CLIFFS, "4L": TERRAIN_CLIFFS,
+    "5A": TERRAIN_CLIFFS, "5B": TERRAIN_CLIFFS, "5C": TERRAIN_CLIFFS, "5D": TERRAIN_CLIFFS,
+    "6A": TERRAIN_WATER, "6B": TERRAIN_WATER, "6C": TERRAIN_WATER, "6D": TERRAIN_WATER,
+    "7C": TERRAIN_WATER, "7D": TERRAIN_WATER, "7E": TERRAIN_CLIFFS, "7F": TERRAIN_CLIFFS,
+    "7I": TERRAIN_CLIFFS, "7J": TERRAIN_CLIFFS, "7K": TERRAIN_CLIFFS, "7L": TERRAIN_CLIFFS,
+    "8C": TERRAIN_WATER, "8D": TERRAIN_WATER, "8E": TERRAIN_WATER, "8F": TERRAIN_WATER,
+    "8I": TERRAIN_WATER, "8J": TERRAIN_WATER, "8K": TERRAIN_WATER, "8L": TERRAIN_WATER,
+    "9I": TERRAIN_WOODS, "9J": TERRAIN_WOODS,
+    "10J": TERRAIN_WOODS,
+    "11C": TERRAIN_WOODS, "11D": TERRAIN_WOODS,
+    "12C": TERRAIN_WOODS, "12D": TERRAIN_WOODS,
 }
-
-WOODS_TILES: Set[str] = {
-    "1K", "1L", "2K", "2L",
-    "9I", "9J", "10J",
-    "11C", "11D", "12C", "12D",
-}
-
 
 
 @dataclass
@@ -149,6 +151,8 @@ class BattleState:
     active_battle_message_id: Optional[int] = None
     provoked_enemies: Set[str] = field(default_factory=set)
     battle_over: bool = False
+    terrain: Dict[str, str] = field(default_factory=dict)
+    starting_positions: Tuple[str, ...] = tuple(STARTING_POSITIONS)
 
 
 # FE Engage-inspired class base stats storage. (Some classes intentionally not yet used by units.)
@@ -330,6 +334,15 @@ ENEMY_UNITS: List[Unit] = [
 PLAYER_UNITS_BY_NAME: Set[str] = {unit.name for unit in PLAYER_UNITS}
 ENEMY_UNITS_BY_NAME: Set[str] = {unit.name for unit in ENEMY_UNITS}
 
+BATTLE2_ENEMY_UNITS: List[Unit] = [
+    Unit("Sword Fighter 1", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "1G", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 2", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "3B", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 3", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "3J", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 4", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "6E", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 5", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "6G", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 6", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "9A", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
+]
+
 
 def coord_to_xy(coord: str) -> Tuple[int, int]:
     row_str = coord[:-1]
@@ -475,41 +488,45 @@ def weapon_targets_allies(unit: Unit) -> bool:
     return weapon.targets_allies or weapon.kind == "staff"
 
 
+def terrain_at(state: BattleState, coord: str) -> str:
+    return state.terrain.get(coord, TERRAIN_PLAINS)
+
+
+def terrain_info(state: BattleState, coord: str) -> Dict[str, object]:
+    return TERRAIN_INFO[terrain_at(state, coord)]
+
+
+def is_infantry_passable(state: BattleState, coord: str) -> bool:
+    return bool(terrain_info(state, coord)["infantry_passable"])
+
+
+def terrain_movement_cost(state: BattleState, coord: str) -> int:
+    return int(terrain_info(state, coord)["mov_cost"])
+
+
 def movement_range(state: BattleState, unit: Unit) -> Set[str]:
     blocked = occupied_coords(state, ignore_player=unit.name, ignore_enemy=unit.name)
-    reachable: Set[str] = {unit.coord}
     best_cost: Dict[str, int] = {unit.coord: 0}
-    queue: deque[str] = deque([unit.coord])
+    queue: deque[Tuple[str, int]] = deque([(unit.coord, 0)])
 
     while queue:
-        current = queue.popleft()
-        current_row, current_col = coord_to_xy(current)
-        current_cost = best_cost[current]
-
-        for d_row, d_col in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            next_row = current_row + d_row
-            next_col = current_col + d_col
-            if not in_bounds(next_row, next_col):
+        current, spent = queue.popleft()
+        row, col = coord_to_xy(current)
+        for nr, nc in ((row - 1, col), (row + 1, col), (row, col - 1), (row, col + 1)):
+            if not in_bounds(nr, nc):
                 continue
-
-            next_coord = xy_to_coord(next_row, next_col)
-            if next_coord in blocked:
+            nxt = xy_to_coord(nr, nc)
+            if nxt in blocked or not is_infantry_passable(state, nxt):
                 continue
-            if not is_traversable(next_coord, unit):
+            new_cost = spent + terrain_movement_cost(state, nxt)
+            if new_cost > unit.stats.mov:
                 continue
-
-            step_cost = terrain_movement_cost(next_coord)
-            next_cost = current_cost + step_cost
-            if next_cost > unit.stats.mov:
+            previous = best_cost.get(nxt)
+            if previous is not None and previous <= new_cost:
                 continue
-
-            prior_cost = best_cost.get(next_coord)
-            if prior_cost is not None and prior_cost <= next_cost:
-                continue
-
-            best_cost[next_coord] = next_cost
-            reachable.add(next_coord)
-            queue.append(next_coord)
+            best_cost[nxt] = new_cost
+            reachable.add(nxt)
+            queue.append((nxt, new_cost))
 
     return reachable
 
@@ -540,9 +557,21 @@ def full_threat_range(state: BattleState, unit: Unit) -> Set[str]:
     return weapon_range_from_origins(move_tiles, unit.equipped_weapon)
 
 
-def create_base_grid() -> Image.Image:
+def resolve_board_background_path(state: BattleState) -> Optional[str]:
+    if not state.terrain:
+        return None
+    return resolve_asset_case_insensitive(os.path.dirname(TEST_MAP_IMAGE_PATH), os.path.basename(TEST_MAP_IMAGE_PATH))
+
+
+def create_base_grid(*, background_path: Optional[str] = None) -> Image.Image:
     side = GRID_SIZE * CELL_SIZE + GRID_LINE_WIDTH
-    img = Image.new("RGBA", (side, side), BOARD_BG)
+    if background_path:
+        map_image = Image.open(background_path).convert("RGBA")
+        if map_image.size != (side, side):
+            map_image = map_image.resize((side, side), Image.Resampling.LANCZOS)
+        img = map_image
+    else:
+        img = Image.new("RGBA", (side, side), BOARD_BG)
     draw = ImageDraw.Draw(img)
     for i in range(GRID_SIZE + 1):
         p = i * CELL_SIZE
@@ -833,11 +862,11 @@ def render_battle_map(
     action_color: Tuple[int, int, int, int] = (220, 38, 38, 100),
     action_outline: Tuple[int, int, int, int] = (153, 27, 27, 255),
 ) -> BytesIO:
-    board = create_base_grid()
+    board = create_base_grid(background_path=resolve_board_background_path(state))
     draw = ImageDraw.Draw(board)
 
     if show_player_spaces:
-        for coord in STARTING_POSITIONS:
+        for coord in state.starting_positions:
             x, y = cell_origin(coord)
             draw.rectangle(
                 [(x, y), (x + CELL_SIZE - BOARD_PADDING * 2, y + CELL_SIZE - BOARD_PADDING * 2)],
@@ -909,12 +938,8 @@ def render_battle_map(
 
 
 def render_test_map() -> BytesIO:
-    board = create_base_grid()
-    if os.path.exists(TEST_MAP_IMAGE_PATH):
-        test_map = Image.open(TEST_MAP_IMAGE_PATH).convert("RGBA")
-        if test_map.size != board.size:
-            test_map = test_map.resize(board.size, Image.NEAREST)
-        board.alpha_composite(test_map, (0, 0))
+    background_path = resolve_asset_case_insensitive(os.path.dirname(TEST_MAP_IMAGE_PATH), os.path.basename(TEST_MAP_IMAGE_PATH))
+    board = create_base_grid(background_path=background_path)
 
     buf = BytesIO()
     board.save(buf, format="PNG")
@@ -953,7 +978,7 @@ def unit_info_block(unit: Unit) -> str:
 def build_preparation_embed(state: BattleState, deployed: Dict[str, str]) -> discord.Embed:
     enemies = ", ".join(sorted(unit.coord for unit in state.enemies.values()))
     deployed_lines: List[str] = []
-    for slot in STARTING_POSITIONS:
+    for slot in state.starting_positions:
         unit_name = deployed.get(slot, "Empty")
         deployed_lines.append(f"**{slot}** → {unit_name}")
 
@@ -965,7 +990,7 @@ def build_preparation_embed(state: BattleState, deployed: Dict[str, str]) -> dis
             f"### Enemy Units: **{len(state.enemies)}**",
             f"Enemy positions: {enemies}",
             "",
-            f"### Player Start Spaces: {', '.join(STARTING_POSITIONS)}",
+            f"### Player Start Spaces: {', '.join(state.starting_positions)}",
             "\n".join(deployed_lines),
             "",
             "### Win Condition: **Route the Enemy**",
@@ -977,7 +1002,7 @@ def build_preparation_embed(state: BattleState, deployed: Dict[str, str]) -> dis
 
 
 def build_inspect_embed(state: BattleState, coord: str) -> discord.Embed:
-    terrain_name = terrain_at(coord)
+    terrain_name = str(terrain_info(state, coord)["name"])
     occupant_text = "No unit on this tile."
     for player in state.players.values():
         if player.coord == coord:
@@ -1014,6 +1039,7 @@ def build_movement_preview_embed(
         [
             f"Preview tile: **{preview_coord}**",
             f"Movement used: **{steps_taken}/{movement_cap}**",
+            "Woods cost 2 movement and grant +30 avoid.",
             "",
             "🟦 Light blue = reachable movement tiles",
             action_color_text,
@@ -1824,8 +1850,21 @@ class DirectionView(discord.ui.View):
             await interaction.response.send_message("That tile is blocked.", ephemeral=True)
             return
 
+        if not is_infantry_passable(self.state, candidate):
+            await interaction.response.send_message("Infantry cannot move onto that terrain.", ephemeral=True)
+            return
+
+        move_cost = terrain_movement_cost(self.state, candidate)
+        new_steps = self.steps_taken + move_cost
+        if new_steps > self.movement_cap:
+            await interaction.response.send_message(
+                f"That move costs {move_cost} movement and exceeds {self.unit_name}'s MOV.",
+                ephemeral=True,
+            )
+            return
+
         self.preview_coord = candidate
-        self.steps_taken += 1
+        self.steps_taken = new_steps
         self.path.append(candidate)
         file, embed = self.preview_file_and_embed()
         await interaction.response.edit_message(
@@ -1858,7 +1897,7 @@ class DirectionView(discord.ui.View):
             return
         self.path.pop()
         self.preview_coord = self.path[-1]
-        self.steps_taken = len(self.path) - 1
+        self.steps_taken = sum(terrain_movement_cost(self.state, tile) for tile in self.path[1:])
         file, embed = self.preview_file_and_embed()
         await interaction.response.edit_message(
             content=f"Moving {self.unit_name}. Use direction buttons then Confirm.",
@@ -1888,6 +1927,10 @@ class DirectionView(discord.ui.View):
                 "You can't end movement on an occupied tile.",
                 ephemeral=True,
             )
+            return
+
+        if not is_infantry_passable(self.state, self.preview_coord):
+            await interaction.response.send_message("You cannot end movement on impassable terrain.", ephemeral=True)
             return
 
         self.state.players[self.unit_name].coord = self.preview_coord
@@ -2173,7 +2216,7 @@ class PlaceUnitSelect(discord.ui.Select):
 class PlaceSlotSelect(discord.ui.Select):
     def __init__(self, prep_view: "PreparationView"):
         taken_slots = set(prep_view.deployed.keys())
-        available_slots = [slot for slot in STARTING_POSITIONS if slot not in taken_slots]
+        available_slots = [slot for slot in prep_view.state.starting_positions if slot not in taken_slots]
         if prep_view.selected_slot and prep_view.selected_slot not in taken_slots:
             available_slots.insert(0, prep_view.selected_slot)
         options = [discord.SelectOption(label=slot, value=slot) for slot in available_slots]
@@ -2294,7 +2337,7 @@ class PreparationView(discord.ui.View):
     def auto_assign_all_units(self) -> Tuple[bool, str]:
         assigned_units = set(self.deployed.values())
         unassigned_units = [name for name in self.state.players.keys() if name not in assigned_units]
-        available_slots = [slot for slot in STARTING_POSITIONS if slot not in self.deployed]
+        available_slots = [slot for slot in self.state.starting_positions if slot not in self.deployed]
 
         if not unassigned_units:
             return False, "All player units are already assigned."
@@ -2343,7 +2386,7 @@ class PreparationView(discord.ui.View):
     @discord.ui.button(label="Place Units", style=discord.ButtonStyle.primary)
     async def place_units(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         remaining_units = len(self.state.players) - len(self.deployed)
-        remaining_slots = len(STARTING_POSITIONS) - len(self.deployed)
+        remaining_slots = len(self.state.starting_positions) - len(self.deployed)
         if remaining_units <= 0 or remaining_slots <= 0:
             await interaction.response.send_message("All units and slots are already assigned.", ephemeral=True)
             return
@@ -2433,24 +2476,30 @@ class BattleCog(commands.Cog):
         prep_view.message = message
         await message.edit(view=prep_view)
 
-    @app_commands.command(name="battle2", description="Show a no-units test map.")
+    @app_commands.command(name="battle2", description="Start Battle 2 on the custom terrain map.")
     async def battle2(self, interaction: discord.Interaction) -> None:
-        img = render_test_map()
-        file = discord.File(img, filename="battle2_map.png")
-        description_lines = [
-            "## Test Map",
-            "### Player Units: **0**",
-            "### Enemy Units: **0**",
-            "",
-            "No enemies or players are spawned on this map.",
-        ]
-        if os.path.exists(TEST_MAP_IMAGE_PATH):
-            description_lines.append("Loaded terrain from `assets/battle2_map.png`.")
-        else:
-            description_lines.append("`assets/battle2_map.png` not found, showing fallback grid.")
-        embed = discord.Embed(title="Fire Emblem Test Map", description="\n".join(description_lines), color=0x5C9E31)
-        embed.set_image(url="attachment://battle2_map.png")
-        await interaction.response.send_message(embed=embed, file=file)
+        players = {u.name: clone_unit(u) for u in PLAYER_UNITS}
+        enemies = {u.name: clone_unit(u) for u in BATTLE2_ENEMY_UNITS}
+        state = BattleState(
+            players=players,
+            enemies=enemies,
+            terrain=dict(BATTLE2_TERRAIN),
+            starting_positions=tuple(BATTLE2_STARTING_POSITIONS),
+        )
+        channel_id = interaction.channel_id if interaction.channel_id is not None else 0
+        self.battles[channel_id] = state
+
+        img = render_battle_map(state, show_player_spaces=True, visible_player_names=set())
+        file = discord.File(img, filename="battle_map.png")
+        prep_view = PreparationView(state)
+        embed = build_preparation_embed(state, prep_view.deployed)
+        embed.title = "Fire Emblem Mock Battle 2"
+        embed.set_image(url="attachment://battle_map.png")
+
+        await interaction.response.send_message(embed=embed, file=file, view=prep_view)
+        message = await interaction.original_response()
+        prep_view.message = message
+        await message.edit(view=prep_view)
 
 
 async def setup(bot: commands.Bot) -> None:
