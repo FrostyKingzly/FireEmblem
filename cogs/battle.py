@@ -88,6 +88,7 @@ class CharacterProfile:
     portrait_image_name: Optional[str] = None
     critical_quotes: Tuple[str, ...] = ()
     critical_image_name: Optional[str] = None
+    critical_image_url: Optional[str] = None
 
 
 @dataclass
@@ -206,6 +207,7 @@ CHARACTER_PROFILES: Dict[str, CharacterProfile] = {
         portrait_image_name="acheron.png",
         critical_quotes=("I weep for the departed.",),
         critical_image_name="acheron_critical.png",
+        critical_image_url="https://cdn.discordapp.com/attachments/1478853056962625668/1487620310424486030/08340B99-085E-4DCC-AB8C-508D689FBEF1.jpg?ex=69c9cde0&is=69c87c60&hm=cf7bda108c7ec12888af7998a3eb2cdc76b7f6e3baaac14b521d97d374e3dd1a&",
     ),
     "Vander": CharacterProfile(portrait_image_name="vander.png"),
     "Clanne": CharacterProfile(portrait_image_name="clanne.png"),
@@ -907,6 +909,10 @@ def build_critical_embed(event: CriticalEvent) -> discord.Embed:
         description=f"***“{event.quote}”***",
         color=0x9B59B6,
     )
+    profile = profile_for_unit(event.attacker)
+    if profile.critical_image_url:
+        embed.set_image(url=profile.critical_image_url)
+        return embed
     critical_image = resolve_asset_for_unit(event.attacker, use_critical_image=True)
     if critical_image is not None:
         filename = os.path.basename(critical_image)
