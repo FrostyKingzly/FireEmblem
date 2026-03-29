@@ -918,7 +918,7 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
                 lines.append(f"💀 {enemy.name} is defeated!")
                 state.enemies.pop(enemy.name, None)
 
-        await send_battle_log_sequence(interaction, enemy, target, lines, critical_events)
+        await send_action_log_sequence(interaction, enemy, target, lines, critical_events)
         await refresh_battle_message(interaction, state, active_enemy_message)
         if await check_and_finalize_battle(interaction, state):
             return
@@ -998,8 +998,8 @@ def build_heal_forecast_embed(healer: Unit, ally: Unit) -> discord.Embed:
     return embed
 
 
-def build_battle_log_embed(lines: List[str], initiator: Unit) -> discord.Embed:
-    embed = discord.Embed(title="Battle Log", description="\n".join(lines), color=0xD67F2C)
+def build_action_log_embed(lines: List[str], initiator: Unit) -> discord.Embed:
+    embed = discord.Embed(title="Action Log", description="\n".join(lines), color=0xD67F2C)
     initiator_image = resolve_asset_for_unit(initiator)
     if initiator_image is not None:
         filename = os.path.basename(initiator_image)
@@ -1071,7 +1071,7 @@ async def send_embed_with_unit_asset(
     await channel.send(embed=embed)
 
 
-async def send_battle_log_sequence(
+async def send_action_log_sequence(
     interaction: discord.Interaction,
     attacker: Unit,
     defender: Unit,
@@ -1086,14 +1086,14 @@ async def send_battle_log_sequence(
         )
 
     if not critical_events:
-        await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(lines, attacker), attacker)
+        await send_embed_with_unit_asset(interaction.channel, build_action_log_embed(lines, attacker), attacker)
         return
 
     buffered: List[str] = []
     for line in lines:
         if line.startswith("[CRITICAL_EVENT:") and line.endswith("]"):
             if buffered:
-                await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(buffered, attacker), attacker)
+                await send_embed_with_unit_asset(interaction.channel, build_action_log_embed(buffered, attacker), attacker)
                 buffered = []
             marker = line.removeprefix("[CRITICAL_EVENT:").removesuffix("]")
             if marker.isdigit():
@@ -1110,7 +1110,19 @@ async def send_battle_log_sequence(
         buffered.append(line)
 
     if buffered:
-        await send_embed_with_unit_asset(interaction.channel, build_battle_log_embed(buffered, attacker), attacker)
+        await send_embed_with_unit_asset(interaction.channel, build_action_log_embed(buffered, attacker), attacker)
+
+
+async def send_single_action_log(
+    interaction: discord.Interaction,
+    initiator: Unit,
+    lines: List[str],
+) -> None:
+    await send_embed_with_unit_asset(
+        interaction.channel,
+        build_action_log_embed(lines, initiator),
+        initiator,
+    )
 
 
 class HealTargetSelect(discord.ui.Select):
@@ -1157,16 +1169,27 @@ class HealForecastView(discord.ui.View):
         amount = heal_amount(healer)
         before = ally.current_hp
         ally.current_hp = min(ally.stats.hp, ally.current_hp + amount)
+        recovered = ally.current_hp - before
         self.state.moved_this_turn.add(self.healer_name)
         await interaction.response.edit_message(
             content=f"{healer.name} uses {healer.equipped_weapon.name} on {ally.name}: {before} → {ally.current_hp} HP.",
             embed=None,
             view=None,
         )
+        action_lines = [
+            f"**{healer.name}** uses **{healer.equipped_weapon.name}** on **{ally.name}**.",
+            f"🩹 {ally.name} recovers **{recovered} HP** ({before} → {ally.current_hp}).",
+        ]
+        await send_single_action_log(interaction, healer, action_lines)
         active_message_id = self.state.active_battle_message_id
         if active_message_id is not None:
             battle_message = await interaction.channel.fetch_message(active_message_id)
             await refresh_battle_message(interaction, self.state, battle_message)
+        if self.state.phase == "player" and len(self.state.moved_this_turn) >= len(self.state.players):
+            await interaction.followup.send("All remaining player units acted. Ending Player Phase.", ephemeral=True)
+            if active_message_id is not None:
+                battle_message = await interaction.channel.fetch_message(active_message_id)
+                await run_enemy_phase(interaction, self.state, battle_message)
 
     @discord.ui.button(label="Back", style=discord.ButtonStyle.secondary)
     async def back(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -1264,7 +1287,7 @@ class PreBattleView(discord.ui.View):
         self.state.moved_this_turn.add(self.player_name)
         await interaction.response.edit_message(content="Combat resolved.", embed=None, view=None)
 
-        await send_battle_log_sequence(interaction, player, enemy, lines, critical_events)
+        await send_action_log_sequence(interaction, player, enemy, lines, critical_events)
 
         active_message_id = self.state.active_battle_message_id
         if active_message_id is not None:
