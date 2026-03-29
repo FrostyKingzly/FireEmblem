@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import logging
 import os
 import random
@@ -522,6 +523,11 @@ def resolve_board_background_path(state: BattleState) -> Optional[str]:
 
 
 def create_base_grid(*, background_path: Optional[str] = None) -> Image.Image:
+    return _create_base_grid_template(background_path).copy()
+
+
+@functools.lru_cache(maxsize=8)
+def _create_base_grid_template(background_path: Optional[str] = None) -> Image.Image:
     side = GRID_SIZE * CELL_SIZE + GRID_LINE_WIDTH
     if background_path:
         map_image = Image.open(background_path).convert("RGBA")
@@ -600,18 +606,15 @@ def remove_solid_background(sprite: Image.Image) -> Image.Image:
 
 
 def load_sprite_from_assets(unit: Unit) -> Optional[Image.Image]:
-    candidate_names: List[str] = []
-    if unit.image_name:
-        candidate_names.append(unit.image_name)
-    candidate_names.append(f"{unit.name.lower().replace(' ', '_')}.png")
-    candidate_names.append(f"{unit.name.lower()}.png")
-    candidate_names.append(f"{unit.name}.png")
+    sprite_path = resolve_asset_for_unit(unit)
+    if sprite_path is None:
+        return None
+    return load_cached_rgba_image(sprite_path).copy()
 
-    for filename in candidate_names:
-        path = os.path.join(ASSET_DIR, filename)
-        if os.path.exists(path):
-            return Image.open(path).convert("RGBA")
-    return None
+
+@functools.lru_cache(maxsize=64)
+def load_cached_rgba_image(path: str) -> Image.Image:
+    return Image.open(path).convert("RGBA")
 
 
 def profile_for_unit(unit: Unit) -> CharacterProfile:
