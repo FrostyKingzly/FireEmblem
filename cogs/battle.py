@@ -19,6 +19,10 @@ GRID_LINE_WIDTH = 4
 BOARD_PADDING = 4
 BOARD_BG = (216, 216, 216, 255)
 GRID_COLOR = (0, 0, 0, 255)
+HP_BAR_HEIGHT = 10
+HP_BAR_SIDE_MARGIN = 6
+HP_BAR_BOTTOM_MARGIN = 3
+HP_BAR_BACKGROUND = (20, 20, 20, 230)
 BACKGROUND_KEY_DISTANCE = 45
 ENEMY_SPRITE_SIZE = (81, 103)
 
@@ -695,6 +699,30 @@ def draw_fallback_unit(draw: ImageDraw.ImageDraw, coord: str, color: Tuple[int, 
     draw.ellipse([(cx - radius, cy - radius), (cx + radius, cy + radius)], fill=color, outline=(0, 0, 0, 255), width=3)
 
 
+def draw_unit_hp_bar(
+    draw: ImageDraw.ImageDraw,
+    unit: Unit,
+    *,
+    fill_color: Tuple[int, int, int, int],
+) -> None:
+    max_hp = max(1, unit.stats.hp)
+    current_hp = max(0, min(unit.current_hp or 0, max_hp))
+    hp_ratio = current_hp / max_hp
+
+    x, y = cell_origin(unit.coord)
+    left = x + HP_BAR_SIDE_MARGIN
+    right = x + CELL_SIZE - BOARD_PADDING * 2 - HP_BAR_SIDE_MARGIN
+    bottom = y + CELL_SIZE - BOARD_PADDING * 2 - HP_BAR_BOTTOM_MARGIN
+    top = bottom - HP_BAR_HEIGHT
+
+    draw.rectangle([(left, top), (right, bottom)], fill=HP_BAR_BACKGROUND)
+    if hp_ratio <= 0:
+        return
+
+    inner_right = left + round((right - left) * hp_ratio)
+    draw.rectangle([(left, top), (inner_right, bottom)], fill=fill_color)
+
+
 def render_battle_map(
     state: BattleState,
     *,
@@ -753,12 +781,13 @@ def render_battle_map(
         sprite = load_sprite_from_assets(enemy)
         if sprite is None:
             draw_fallback_unit(draw, enemy.coord, (220, 50, 50, 255))
-            continue
-        sprite = prepare_sprite_for_board(enemy, sprite)
-        x, y = cell_origin(enemy.coord)
-        px = x + (CELL_SIZE - sprite.width) // 2
-        py = y + (CELL_SIZE - sprite.height) // 2
-        board.alpha_composite(sprite, (px, py))
+        else:
+            sprite = prepare_sprite_for_board(enemy, sprite)
+            x, y = cell_origin(enemy.coord)
+            px = x + (CELL_SIZE - sprite.width) // 2
+            py = y + (CELL_SIZE - sprite.height) // 2
+            board.alpha_composite(sprite, (px, py))
+        draw_unit_hp_bar(draw, enemy, fill_color=(220, 38, 38, 255))
 
     for player in state.players.values():
         if visible_player_names is not None and player.name not in visible_player_names:
@@ -766,12 +795,13 @@ def render_battle_map(
         sprite = load_sprite_from_assets(player)
         if sprite is None:
             draw_fallback_unit(draw, player.coord, (50, 120, 220, 255))
-            continue
-        sprite = prepare_sprite_for_board(player, sprite)
-        x, y = cell_origin(player.coord)
-        px = x + (CELL_SIZE - sprite.width) // 2
-        py = y + (CELL_SIZE - sprite.height) // 2
-        board.alpha_composite(sprite, (px, py))
+        else:
+            sprite = prepare_sprite_for_board(player, sprite)
+            x, y = cell_origin(player.coord)
+            px = x + (CELL_SIZE - sprite.width) // 2
+            py = y + (CELL_SIZE - sprite.height) // 2
+            board.alpha_composite(sprite, (px, py))
+        draw_unit_hp_bar(draw, player, fill_color=(37, 99, 235, 255))
 
     buf = BytesIO()
     board.save(buf, format="PNG")
