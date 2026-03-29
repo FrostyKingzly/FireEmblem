@@ -34,6 +34,8 @@ BATTLE_SCENE_MELEE_ENEMY_LEFT_PLANE = "J"
 BATTLE_SCENE_RANGED_PLAYER_RIGHT_PLANE = "F"
 BATTLE_SCENE_RANGED_ENEMY_LEFT_PLANE = "L"
 BATTLE_SCENE_FOOTING_ROW = 5.5
+BATTLE_SCENE_ENEMY_FORWARD_OFFSET_STEPS = 1.0
+BATTLE_SCENE_ENEMY_UPWARD_OFFSET_STEPS = 0.5
 TEST_MAP_IMAGE_PATH = os.path.join(ASSET_DIR, "battle2_map.png")
 STARTING_POSITIONS = ["1A", "1B", "2A", "2B"]
 
@@ -613,6 +615,8 @@ def calculate_battle_scene_positions(
     scene_width, scene_height = scene_size
     player_width, player_height = player_sprite_size
     enemy_width, enemy_height = enemy_sprite_size
+    cell_width = scene_width / BATTLE_SCENE_GRID_COLUMNS
+    cell_height = scene_height / BATTLE_SCENE_GRID_ROWS
 
     if ranged:
         player_plane = BATTLE_SCENE_RANGED_PLAYER_RIGHT_PLANE
@@ -622,10 +626,12 @@ def calculate_battle_scene_positions(
         enemy_plane = BATTLE_SCENE_MELEE_ENEMY_LEFT_PLANE
 
     player_x = battle_scene_plane_x(scene_width, player_plane) - player_width
-    enemy_x = battle_scene_plane_x(scene_width, enemy_plane)
+    enemy_x = battle_scene_plane_x(scene_width, enemy_plane) - round(
+        BATTLE_SCENE_ENEMY_FORWARD_OFFSET_STEPS * cell_width
+    )
     footing_y = battle_scene_footing_y(scene_height)
     player_y = footing_y - player_height
-    enemy_y = footing_y - enemy_height
+    enemy_y = footing_y - enemy_height - round(BATTLE_SCENE_ENEMY_UPWARD_OFFSET_STEPS * cell_height)
     return (player_x, player_y), (enemy_x, enemy_y)
 
 
