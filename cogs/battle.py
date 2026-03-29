@@ -217,42 +217,42 @@ CHARACTER_PROFILES: Dict[str, CharacterProfile] = {
 
 ENEMY_UNITS: List[Unit] = [
     Unit(
-        "Enemy 1",
+        "Sword Fighter 1",
         1,
-        "Unknown",
-        UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
+        "Sword Fighter",
+        CLASS_BASE_STATS["Sword Fighter"],
         "12L",
-        image_name="enemy.png",
+        image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
     Unit(
-        "Enemy 2",
+        "Sword Fighter 2",
         1,
-        "Unknown",
-        UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
+        "Sword Fighter",
+        CLASS_BASE_STATS["Sword Fighter"],
         "12K",
-        image_name="enemy.png",
+        image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
     Unit(
-        "Enemy 3",
+        "Sword Fighter 3",
         1,
-        "Unknown",
-        UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
+        "Sword Fighter",
+        CLASS_BASE_STATS["Sword Fighter"],
         "11L",
-        image_name="enemy.png",
+        image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
     Unit(
-        "Enemy 4",
+        "Sword Fighter 4",
         1,
-        "Unknown",
-        UnitStats(10, 1, 1, 1, 1, 1, 1, 1, 1, 4),
+        "Sword Fighter",
+        CLASS_BASE_STATS["Sword Fighter"],
         "11K",
-        image_name="enemy.png",
+        image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
@@ -447,6 +447,7 @@ def load_sprite_from_assets(unit: Unit) -> Optional[Image.Image]:
     candidate_names: List[str] = []
     if unit.image_name:
         candidate_names.append(unit.image_name)
+    candidate_names.append(f"{unit.name.lower().replace(' ', '_')}.png")
     candidate_names.append(f"{unit.name.lower()}.png")
     candidate_names.append(f"{unit.name}.png")
 
@@ -470,6 +471,7 @@ def resolve_asset_for_unit(unit: Unit, *, use_critical_image: bool = False) -> O
         candidate_names.append(profile.portrait_image_name)
     if unit.image_name:
         candidate_names.append(unit.image_name)
+    candidate_names.append(f"{unit.name.lower().replace(' ', '_')}.png")
     candidate_names.append(f"{unit.name.lower()}.png")
     candidate_names.append(f"{unit.name}.png")
 
