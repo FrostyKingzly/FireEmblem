@@ -1063,6 +1063,13 @@ async def send_embed_with_unit_asset(
     *,
     use_critical_image: bool = False,
 ) -> None:
+    # If the embed already points at a remote image URL (e.g. a critical splash art),
+    # do not attach a fallback unit file. Discord will render that extra file as a
+    # separate non-embed image message.
+    embed_image_url = embed.image.url if embed.image else None
+    if embed_image_url and not embed_image_url.startswith("attachment://"):
+        await channel.send(embed=embed)
+        return
     asset_path = resolve_asset_for_unit(unit, use_critical_image=use_critical_image)
     if asset_path is not None:
         file = discord.File(asset_path, filename=os.path.basename(asset_path))
