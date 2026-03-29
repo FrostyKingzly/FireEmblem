@@ -205,7 +205,7 @@ CHARACTER_PROFILES: Dict[str, CharacterProfile] = {
     "Acheron": CharacterProfile(
         portrait_image_name="acheron.png",
         critical_quotes=("I weep for the departed.",),
-        critical_image_name="acheron.png",
+        critical_image_name="acheron_critical.png",
     ),
     "Vander": CharacterProfile(portrait_image_name="vander.png"),
     "Clanne": CharacterProfile(portrait_image_name="clanne.png"),
@@ -904,7 +904,7 @@ def build_battle_log_embed(lines: List[str], initiator: Unit) -> discord.Embed:
 def build_critical_embed(event: CriticalEvent) -> discord.Embed:
     embed = discord.Embed(
         title="CRITICAL!",
-        description=event.quote,
+        description=f"***“{event.quote}”***",
         color=0x9B59B6,
     )
     critical_image = resolve_asset_for_unit(event.attacker, use_critical_image=True)
