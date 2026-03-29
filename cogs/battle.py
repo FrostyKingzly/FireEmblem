@@ -273,7 +273,7 @@ ENEMY_UNITS: List[Unit] = [
         1,
         "Sword Fighter",
         CLASS_BASE_STATS["Sword Fighter"],
-        "12L",
+        "1G",
         image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
@@ -283,7 +283,7 @@ ENEMY_UNITS: List[Unit] = [
         1,
         "Sword Fighter",
         CLASS_BASE_STATS["Sword Fighter"],
-        "12K",
+        "3B",
         image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
@@ -293,7 +293,7 @@ ENEMY_UNITS: List[Unit] = [
         1,
         "Sword Fighter",
         CLASS_BASE_STATS["Sword Fighter"],
-        "11L",
+        "3J",
         image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
@@ -303,11 +303,32 @@ ENEMY_UNITS: List[Unit] = [
         1,
         "Sword Fighter",
         CLASS_BASE_STATS["Sword Fighter"],
-        "11K",
+        "6E",
         image_name="sword_fighter.png",
         behavior="aggressive",
         inventory=[WEAPONS["Iron Sword"]],
     ),
+    Unit(
+        "Sword Fighter 5",
+        1,
+        "Sword Fighter",
+        CLASS_BASE_STATS["Sword Fighter"],
+        "6G",
+        image_name="sword_fighter.png",
+        behavior="aggressive",
+        inventory=[WEAPONS["Iron Sword"]],
+    ),
+    Unit(
+        "Sword Fighter 6",
+        1,
+        "Sword Fighter",
+        CLASS_BASE_STATS["Sword Fighter"],
+        "9A",
+        image_name="sword_fighter.png",
+        behavior="aggressive",
+        inventory=[WEAPONS["Iron Sword"]],
+    ),
+
 ]
 
 PLAYER_UNITS_BY_NAME: Set[str] = {unit.name for unit in PLAYER_UNITS}
@@ -373,7 +394,7 @@ def attack_speed(unit: Unit) -> int:
 
 def calc_hit(attacker: Unit, defender: Unit) -> int:
     hit = attacker.equipped_weapon.hit + (attacker.stats.dex * 2) + (attacker.stats.luck // 2)
-    avoid = (attack_speed(defender) * 2) + defender.stats.luck
+    avoid = (attack_speed(defender) * 2) + defender.stats.luck + terrain_avoid_bonus(defender.coord)
     return clamp(hit - avoid, 0, 100)
 
 
@@ -437,6 +458,31 @@ def in_bounds(row: int, col: int) -> bool:
     return 1 <= row <= GRID_SIZE and 1 <= col <= GRID_SIZE
 
 
+def terrain_at(coord: str) -> str:
+    if coord in WOODS_TILES:
+        return TERRAIN_WOODS
+    if coord in WATER_TILES:
+        return TERRAIN_WATER
+    if coord in CLIFF_TILES:
+        return TERRAIN_CLIFF
+    return TERRAIN_PLAINS
+
+
+def terrain_avoid_bonus(coord: str) -> int:
+    return WOODS_AVOID_BONUS if terrain_at(coord) == TERRAIN_WOODS else 0
+
+
+def terrain_movement_cost(coord: str) -> int:
+    if terrain_at(coord) == TERRAIN_WOODS:
+        return WOODS_MOVEMENT_COST
+    return 1
+
+
+def is_traversable(coord: str, unit: Unit) -> bool:
+    # Flying units are not implemented yet; infantry cannot enter water or cliffs.
+    return terrain_at(coord) not in {TERRAIN_WATER, TERRAIN_CLIFF}
+
+
 def weapon_targets_allies(unit: Unit) -> bool:
     weapon = unit.equipped_weapon
     return weapon.targets_allies or weapon.kind == "staff"
@@ -459,7 +505,6 @@ def terrain_movement_cost(state: BattleState, coord: str) -> int:
 
 
 def movement_range(state: BattleState, unit: Unit) -> Set[str]:
-    reachable: Set[str] = {unit.coord}
     blocked = occupied_coords(state, ignore_player=unit.name, ignore_enemy=unit.name)
     best_cost: Dict[str, int] = {unit.coord: 0}
     queue: deque[Tuple[str, int]] = deque([(unit.coord, 0)])
