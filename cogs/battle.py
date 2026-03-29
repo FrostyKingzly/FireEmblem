@@ -1574,13 +1574,22 @@ class DirectionView(discord.ui.View):
         move_tiles, action_tiles, is_support = movement_and_action_ranges(self.state, unit)
         action_color = (22, 163, 74, 100) if is_support else (220, 38, 38, 100)
         action_outline = (21, 128, 61, 255) if is_support else (153, 27, 27, 255)
-        img = render_battle_map(
-            self.state,
-            highlight_move_coords=move_tiles,
-            highlight_action_coords=action_tiles,
-            action_color=action_color,
-            action_outline=action_outline,
-        )
+
+        # Keep movement range based on the unit's true origin tile, but render the
+        # marker at the live preview tile so the private movement embed updates as
+        # the player steps around.
+        original_coord = unit.coord
+        unit.coord = self.preview_coord
+        try:
+            img = render_battle_map(
+                self.state,
+                highlight_move_coords=move_tiles,
+                highlight_action_coords=action_tiles,
+                action_color=action_color,
+                action_outline=action_outline,
+            )
+        finally:
+            unit.coord = original_coord
         file = discord.File(img, filename="movement_preview.png")
         embed = build_movement_preview_embed(
             unit,
