@@ -352,10 +352,10 @@ def calc_damage(attacker: Unit, defender: Unit) -> int:
     return max(0, atk - target_defense + poison_bonus_damage(defender.poison_stacks))
 
 
-def hp_bar(after_hp: int, max_hp: int, *, width: int = 10) -> str:
+def hp_bar(after_hp: int, max_hp: int, *, width: int = 10, fill_block: str = "🟦") -> str:
     fill = round((after_hp / max_hp) * width) if max_hp else 0
     fill = clamp(fill, 0, width)
-    return "🟦" * fill + "⬜" * (width - fill)
+    return fill_block * fill + "⬜" * (width - fill)
 
 
 def clone_unit(base: Unit) -> Unit:
@@ -1028,7 +1028,7 @@ def build_prebattle_embed(player: Unit, enemy: Unit) -> discord.Embed:
         name=f"🛡️ {enemy.name} (Enemy)",
         value="\n".join([
             f"Weapon: **{enemy.equipped_weapon.name}**",
-            f"HP: **{enemy_after_hp}/{enemy.stats.hp}** {hp_bar(enemy_after_hp, enemy.stats.hp)}",
+            f"HP: **{enemy_after_hp}/{enemy.stats.hp}** {hp_bar(enemy_after_hp, enemy.stats.hp, fill_block='🟥')}",
             "",
             f"Dmg: **{enemy_dmg}**",
             f"Hit: **{enemy_hit}%**",
@@ -1118,7 +1118,7 @@ def build_battle_scene_embed(
         name=f"🛡️ {enemy_unit.name} (Enemy)",
         value="\n".join([
             f"Weapon: **{enemy_unit.equipped_weapon.name}**",
-            f"HP: **{enemy_hp}/{enemy_unit.stats.hp}** {hp_bar(enemy_hp, enemy_unit.stats.hp)}",
+            f"HP: **{enemy_hp}/{enemy_unit.stats.hp}** {hp_bar(enemy_hp, enemy_unit.stats.hp, fill_block='🟥')}",
             "",
             f"Dmg: **{calc_damage(enemy_unit, player_unit)}**",
             f"Hit: **{calc_hit(enemy_unit, player_unit)}%**",
@@ -1152,6 +1152,21 @@ async def send_embed_with_unit_asset(
     await channel.send(embed=embed)
 
 
+class BattleSceneContinueView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self._continue = asyncio.Event()
+
+    @discord.ui.button(label="Go", style=discord.ButtonStyle.success)
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        self._continue.set()
+
+    async def wait_for_continue(self) -> None:
+        await self._continue.wait()
+
+
 async def send_action_log_sequence(
     interaction: discord.Interaction,
     attacker: Unit,
@@ -1169,6 +1184,7 @@ async def send_action_log_sequence(
 
     battle_scene = render_battle_scene(attacker, defender)
     if battle_scene is not None:
+        continue_view = BattleSceneContinueView()
         await interaction.channel.send(
             embed=build_battle_scene_embed(
                 attacker,
@@ -1177,7 +1193,9 @@ async def send_action_log_sequence(
                 enemy_hp_override=scene_enemy_hp,
             ),
             file=discord.File(battle_scene, filename="battle_scene.png"),
+            view=continue_view,
         )
+        await continue_view.wait_for_continue()
 
     if not critical_events:
         await send_embed_with_unit_asset(interaction.channel, build_action_log_embed(lines, attacker), attacker)
