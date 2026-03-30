@@ -954,25 +954,17 @@ def unit_info_block(unit: Unit) -> str:
 
 
 def build_preparation_embed(state: BattleState, deployed: Dict[str, str]) -> discord.Embed:
-    enemies = ", ".join(sorted(unit.coord for unit in state.enemies.values()))
-    deployed_lines: List[str] = []
-    for slot in state.starting_positions:
-        unit_name = deployed.get(slot, "Empty")
-        deployed_lines.append(f"**{slot}** → {unit_name}")
-
     embed = discord.Embed(title="Preparation Phase", color=0x5C9E31)
     embed.description = "\n".join(
         [
             "Set your formation before battle begins.",
             "",
-            f"### Enemy Units: **{len(state.enemies)}**",
-            f"Enemy positions: {enemies}",
-            "",
-            f"### Player Start Spaces: {', '.join(state.starting_positions)}",
-            "\n".join(deployed_lines),
-            "",
             "### Win Condition: **Route the Enemy**",
             "### Loss Condition: **Lose All Units**",
+            "",
+            f"### Enemy Units: **{len(state.enemies)}**",
+            "",
+            f"### Player Units: **{len(deployed)}**",
         ]
     )
     embed.set_footer(text="Use Place Units, Inventory, Inspect, then Begin.")
