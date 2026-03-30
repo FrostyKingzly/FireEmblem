@@ -1009,13 +1009,22 @@ def build_movement_preview_embed(
     return embed
 
 
-def build_inspect_range_embed(state: BattleState, coord: str, inspected_unit: Optional[Unit]) -> discord.Embed:
+def build_inspect_range_embed(
+    state: BattleState,
+    coord: str,
+    inspected_unit: Optional[Unit],
+    supports_allies: bool = False,
+) -> discord.Embed:
     embed = build_inspect_embed(state, coord)
     if inspected_unit is None:
         return embed
+    range_label = "ally support range in green" if supports_allies else "attack range in red"
     embed.add_field(
         name="Range Overlay",
-        value=f"Showing **{inspected_unit.name}** full threat range in red.",
+        value=(
+            f"Showing **{inspected_unit.name}** movement range in blue and "
+            f"{range_label}."
+        ),
         inline=False,
     )
     return embed
@@ -2098,6 +2107,13 @@ class BattleView(discord.ui.View):
         picker = PickUnitView(self.state, self.battle_message_id)
         await interaction.response.send_message("Pick a unit to move:", view=picker, ephemeral=True)
 
+    @discord.ui.button(label="Inspect", style=discord.ButtonStyle.secondary)
+    async def inspect(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if self.state.battle_over:
+            await interaction.response.send_message("This battle is already over.", ephemeral=True)
+            return
+        await interaction.response.send_modal(InspectCoordinateModal(self.state))
+
     @discord.ui.button(label="End", style=discord.ButtonStyle.danger)
     async def end_phase(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if self.state.battle_over:
@@ -2166,15 +2182,26 @@ class InspectCoordinateModal(discord.ui.Modal, title="Inspect Coordinate"):
                     inspected_unit = enemy
                     break
 
-        highlight_coords = full_threat_range(self.state, inspected_unit) if inspected_unit is not None else None
+        move_coords: Optional[Set[str]] = None
+        action_coords: Optional[Set[str]] = None
+        supports_allies = False
+        action_color = (220, 38, 38, 100)
+        action_outline = (153, 27, 27, 255)
+        if inspected_unit is not None:
+            move_coords, action_coords, supports_allies = movement_and_action_ranges(self.state, inspected_unit)
+            if supports_allies:
+                action_color = (22, 163, 74, 115)
+                action_outline = (21, 128, 61, 255)
+
         img = render_battle_map(
             self.state,
-            highlight_action_coords=highlight_coords,
-            action_color=(220, 38, 38, 100),
-            action_outline=(153, 27, 27, 255),
+            highlight_move_coords=move_coords,
+            highlight_action_coords=action_coords,
+            action_color=action_color,
+            action_outline=action_outline,
         )
         file = discord.File(img, filename="inspect_range.png")
-        embed = build_inspect_range_embed(self.state, coord, inspected_unit)
+        embed = build_inspect_range_embed(self.state, coord, inspected_unit, supports_allies=supports_allies)
         embed.set_image(url="attachment://inspect_range.png")
         await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
 
