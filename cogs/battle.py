@@ -731,7 +731,7 @@ def render_battle_scene(attacker: Unit, defender: Unit) -> Optional[BytesIO]:
     scene.alpha_composite(enemy_sprite, enemy_pos)
 
     output = BytesIO()
-    scene.save(output, format="PNG")
+    scene.save(output, format="PNG", compress_level=1)
     output.seek(0)
     return output
 
@@ -898,7 +898,7 @@ def render_battle_map(
         draw_unit_hp_bar(draw, player, fill_color=(37, 99, 235, 255))
 
     buf = BytesIO()
-    board.save(buf, format="PNG")
+    board.save(buf, format="PNG", compress_level=1)
     buf.seek(0)
     return buf
 
@@ -908,7 +908,7 @@ def render_test_map() -> BytesIO:
     board = create_base_grid(background_path=background_path)
 
     buf = BytesIO()
-    board.save(buf, format="PNG")
+    board.save(buf, format="PNG", compress_level=1)
     buf.seek(0)
     return buf
 
@@ -1763,6 +1763,8 @@ class DirectionView(discord.ui.View):
         self.preview_coord = self.start_coord
         self.steps_taken = 0
         self.path: List[str] = [self.start_coord]
+        unit = self.state.players[self.unit_name]
+        self.move_tiles, self.action_tiles, self.supports_allies = movement_and_action_ranges(self.state, unit)
 
     @property
     def movement_cap(self) -> int:
@@ -1770,9 +1772,8 @@ class DirectionView(discord.ui.View):
 
     def preview_file_and_embed(self) -> Tuple[discord.File, discord.Embed]:
         unit = self.state.players[self.unit_name]
-        move_tiles, action_tiles, is_support = movement_and_action_ranges(self.state, unit)
-        action_color = (22, 163, 74, 100) if is_support else (220, 38, 38, 100)
-        action_outline = (21, 128, 61, 255) if is_support else (153, 27, 27, 255)
+        action_color = (22, 163, 74, 100) if self.supports_allies else (220, 38, 38, 100)
+        action_outline = (21, 128, 61, 255) if self.supports_allies else (153, 27, 27, 255)
 
         # Keep movement range based on the unit's true origin tile, but render the
         # marker at the live preview tile so the private movement embed updates as
@@ -1787,8 +1788,8 @@ class DirectionView(discord.ui.View):
             }
             img = render_battle_map(
                 self.state,
-                highlight_move_coords=move_tiles,
-                highlight_action_coords=action_tiles,
+                highlight_move_coords=self.move_tiles,
+                highlight_action_coords=self.action_tiles,
                 highlight_ally_coords=allies_in_range,
                 action_color=action_color,
                 action_outline=action_outline,
@@ -1801,7 +1802,7 @@ class DirectionView(discord.ui.View):
             preview_coord=self.preview_coord,
             steps_taken=self.steps_taken,
             movement_cap=self.movement_cap,
-            support_range=is_support,
+            support_range=self.supports_allies,
         )
         embed.set_image(url="attachment://movement_preview.png")
         return file, embed
