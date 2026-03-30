@@ -157,6 +157,7 @@ class BattleState:
     battle_over: bool = False
     terrain: Dict[str, str] = field(default_factory=dict)
     starting_positions: Tuple[str, ...] = tuple(STARTING_POSITIONS)
+    danger_mode_enabled: bool = False
 
 
 # FE Engage-inspired class base stats storage. (Some classes intentionally not yet used by units.)
@@ -1040,6 +1041,39 @@ def build_inspect_range_embed(
         ),
         inline=False,
     )
+    return embed
+
+
+def build_unit_detail_embed(state: BattleState, unit: Unit, *, team: Literal["player", "enemy"]) -> discord.Embed:
+    team_label = "Player" if team == "player" else "Enemy"
+    terrain_name = str(terrain_info(state, unit.coord)["name"])
+    embed = discord.Embed(title=f"{team_label} Inspect: {unit.name}", color=0x1D82B6)
+    embed.description = "\n".join(
+        [
+            f"Coordinate: **{unit.coord}**",
+            f"Terrain: **{terrain_name}**",
+            "",
+            unit_info_block(unit),
+        ]
+    )
+    return embed
+
+
+def build_danger_embed(state: BattleState) -> discord.Embed:
+    status = "ON" if state.danger_mode_enabled else "OFF"
+    color = 0xC0392B if state.danger_mode_enabled else 0x4B5563
+    embed = discord.Embed(title=f"Danger Area: {status}", color=color)
+    if state.danger_mode_enabled:
+        threatened_tiles = set()
+        for enemy in state.enemies.values():
+            threatened_tiles |= full_threat_range(state, enemy)
+        embed.description = (
+            f"Showing all enemy threat ranges in red on a private map.\n"
+            f"Threatened tiles: **{len(threatened_tiles)}**"
+        )
+        embed.set_footer(text="Weapon effectiveness markers are not active yet.")
+    else:
+        embed.description = "Danger area is hidden."
     return embed
 
 
@@ -2211,7 +2245,36 @@ class BattleView(discord.ui.View):
         if self.state.battle_over:
             await interaction.response.send_message("This battle is already over.", ephemeral=True)
             return
-        await interaction.response.send_modal(InspectCoordinateModal(self.state))
+        await interaction.response.send_message(
+            "Inspect options:",
+            view=InspectOptionsView(self.state),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Danger", style=discord.ButtonStyle.secondary)
+    async def danger(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if self.state.battle_over:
+            await interaction.response.send_message("This battle is already over.", ephemeral=True)
+            return
+        self.state.danger_mode_enabled = not self.state.danger_mode_enabled
+
+        if self.state.danger_mode_enabled:
+            threatened_tiles: Set[str] = set()
+            for enemy in self.state.enemies.values():
+                threatened_tiles |= full_threat_range(self.state, enemy)
+            img = render_battle_map(
+                self.state,
+                highlight_action_coords=threatened_tiles,
+                action_color=(220, 38, 38, 110),
+                action_outline=(127, 29, 29, 255),
+            )
+        else:
+            img = render_battle_map(self.state)
+
+        file = discord.File(img, filename="danger_map.png")
+        embed = build_danger_embed(self.state)
+        embed.set_image(url="attachment://danger_map.png")
+        await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
 
     @discord.ui.button(label="End", style=discord.ButtonStyle.danger)
     async def end_phase(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
@@ -2303,6 +2366,81 @@ class InspectCoordinateModal(discord.ui.Modal, title="Inspect Coordinate"):
         embed = build_inspect_range_embed(self.state, coord, inspected_unit, supports_allies=supports_allies)
         embed.set_image(url="attachment://inspect_range.png")
         await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+
+
+class UnitInspectSelect(discord.ui.Select):
+    def __init__(self, state: BattleState, team: Literal["player", "enemy"]):
+        self.state = state
+        self.team = team
+        pool = state.players if team == "player" else state.enemies
+        options = [
+            discord.SelectOption(label=unit.name, description=f"At {unit.coord}", value=unit.name)
+            for unit in pool.values()
+        ]
+        placeholder = "Choose a player unit" if team == "player" else "Choose an enemy unit"
+        super().__init__(placeholder=placeholder, options=options)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        unit_name = self.values[0]
+        pool = self.state.players if self.team == "player" else self.state.enemies
+        unit = pool[unit_name]
+        move_coords, action_coords, supports_allies = movement_and_action_ranges(self.state, unit)
+        action_color = (22, 163, 74, 115) if supports_allies else (220, 38, 38, 100)
+        action_outline = (21, 128, 61, 255) if supports_allies else (153, 27, 27, 255)
+        img = render_battle_map(
+            self.state,
+            highlight_move_coords=move_coords,
+            highlight_action_coords=action_coords,
+            action_color=action_color,
+            action_outline=action_outline,
+        )
+        file = discord.File(img, filename="inspect_unit.png")
+        embed = build_unit_detail_embed(self.state, unit, team=self.team)
+        embed.add_field(
+            name="Range Overlay",
+            value=(
+                "Blue = movement range\n"
+                + ("Green = ally support range" if supports_allies else "Red = attack range")
+            ),
+            inline=False,
+        )
+        embed.set_image(url="attachment://inspect_unit.png")
+        await interaction.response.edit_message(
+            content=f"Inspecting {unit.name}.",
+            embed=embed,
+            attachments=[file],
+            view=self.view,
+        )
+
+
+class UnitInspectListView(discord.ui.View):
+    def __init__(self, state: BattleState, team: Literal["player", "enemy"]):
+        super().__init__(timeout=300)
+        self.add_item(UnitInspectSelect(state, team))
+
+
+class InspectOptionsView(discord.ui.View):
+    def __init__(self, state: BattleState):
+        super().__init__(timeout=180)
+        self.state = state
+
+    @discord.ui.button(label="Players", style=discord.ButtonStyle.primary)
+    async def players(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="Choose a player to inspect.",
+            view=UnitInspectListView(self.state, "player"),
+        )
+
+    @discord.ui.button(label="Enemies", style=discord.ButtonStyle.danger)
+    async def enemies(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.edit_message(
+            content="Choose an enemy to inspect.",
+            view=UnitInspectListView(self.state, "enemy"),
+        )
+
+    @discord.ui.button(label="Search", style=discord.ButtonStyle.secondary)
+    async def search(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_modal(InspectCoordinateModal(self.state))
 
 
 class PlaceUnitSelect(discord.ui.Select):
@@ -2539,7 +2677,11 @@ class PreparationView(discord.ui.View):
 
     @discord.ui.button(label="Inspect", style=discord.ButtonStyle.secondary)
     async def inspect(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.send_modal(InspectCoordinateModal(self.state))
+        await interaction.response.send_message(
+            "Inspect options:",
+            view=InspectOptionsView(self.state),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Begin", style=discord.ButtonStyle.success)
     async def begin(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
