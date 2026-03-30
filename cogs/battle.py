@@ -1140,7 +1140,8 @@ def behavior_is_aggressive(state: BattleState, enemy: Unit) -> bool:
         return False
     if enemy.name in state.provoked_enemies:
         return True
-    if any(in_weapon_range(enemy, player) for player in state.players.values()):
+    threat_tiles = full_threat_range(state, enemy)
+    if any(player.coord in threat_tiles for player in state.players.values()):
         state.provoked_enemies.add(enemy.name)
         return True
     return False
