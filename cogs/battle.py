@@ -375,9 +375,14 @@ def attack_speed(unit: Unit) -> int:
     return unit.stats.spd - max(0, unit.equipped_weapon.weight - unit.stats.bld)
 
 
-def calc_hit(attacker: Unit, defender: Unit) -> int:
+def calc_avoid(unit: Unit, state: Optional[BattleState] = None) -> int:
+    terrain_bonus = int(terrain_info(state, unit.coord)["avoid"]) if state is not None else 0
+    return (attack_speed(unit) * 2) + (unit.stats.luck // 2) + terrain_bonus
+
+
+def calc_hit(attacker: Unit, defender: Unit, state: Optional[BattleState] = None) -> int:
     hit = attacker.equipped_weapon.hit + (attacker.stats.dex * 2) + (attacker.stats.luck // 2)
-    avoid = (attack_speed(defender) * 2) + defender.stats.luck
+    avoid = calc_avoid(defender, state)
     return clamp(hit - avoid, 0, 100)
 
 
@@ -1107,35 +1112,21 @@ def find_enemy_move_destination(state: BattleState, enemy_name: str) -> str:
     if not state.players:
         return enemy.coord
 
-    current = enemy.coord
-    blocked = occupied_coords(state, ignore_enemy=enemy_name)
-    direction_priority = ["up", "left", "right", "down"]
+    reachable = movement_range(state, enemy)
+    if not reachable:
+        return enemy.coord
 
-    for _ in range(enemy.stats.mov):
-        if any(
-            enemy.equipped_weapon.rng_min <= manhattan_distance(current, player.coord) <= enemy.equipped_weapon.rng_max
-            for player in state.players.values()
-        ):
-            break
+    def nearest_player_distance(coord: str) -> int:
+        return min(manhattan_distance(coord, player.coord) for player in state.players.values())
 
-        nearest_player_coord = min(state.players.values(), key=lambda player: manhattan_distance(current, player.coord)).coord
-        next_coord = None
-        next_distance = manhattan_distance(current, nearest_player_coord)
-        for direction in direction_priority:
-            candidate = move_coord(current, direction)
-            if candidate == current or candidate in blocked:
-                continue
-            candidate_distance = manhattan_distance(candidate, nearest_player_coord)
-            if candidate_distance < next_distance:
-                next_coord = candidate
-                next_distance = candidate_distance
-
-        if next_coord is None:
-            break
-
-        current = next_coord
-        blocked.add(current)
-    return current
+    # Prefer tiles that end in attack range; otherwise choose the closest legal tile.
+    attackable_tiles = [
+        coord for coord in reachable
+        if any(enemy.equipped_weapon.rng_min <= manhattan_distance(coord, player.coord) <= enemy.equipped_weapon.rng_max for player in state.players.values())
+    ]
+    if attackable_tiles:
+        return min(attackable_tiles, key=lambda coord: (nearest_player_distance(coord), coord))
+    return min(reachable, key=lambda coord: (nearest_player_distance(coord), coord))
 
 
 def apply_on_hit_effects(attacker: Unit, defender: Unit, *, lines: List[str]) -> None:
@@ -1157,8 +1148,14 @@ class CriticalEvent:
     quote: str
 
 
-def resolve_combat_round(attacker: Unit, defender: Unit, lines: List[str], critical_events: List[CriticalEvent]) -> bool:
-    hit = calc_hit(attacker, defender)
+def resolve_combat_round(
+    attacker: Unit,
+    defender: Unit,
+    state: BattleState,
+    lines: List[str],
+    critical_events: List[CriticalEvent],
+) -> bool:
+    hit = calc_hit(attacker, defender, state)
     crit = calc_crit(attacker, defender)
     if random.randint(1, 100) > hit:
         lines.append(f"{attacker.name} attacks with {attacker.equipped_weapon.name}, but misses.")
@@ -1210,13 +1207,13 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
         critical_events: List[CriticalEvent] = []
         player_pre_hp = target.current_hp
         enemy_pre_hp = enemy.current_hp
-        defender_down = resolve_combat_round(enemy, target, lines, critical_events)
+        defender_down = resolve_combat_round(enemy, target, state, lines, critical_events)
         if defender_down:
             lines.append(f"💀 {target.name} is defeated!")
             state.players.pop(target.name, None)
             state.moved_this_turn.discard(target.name)
         elif in_weapon_range(target, enemy):
-            attacker_down = resolve_combat_round(target, enemy, lines, critical_events)
+            attacker_down = resolve_combat_round(target, enemy, state, lines, critical_events)
             apply_after_combat_skill(target, enemy, lines=lines)
             if attacker_down:
                 lines.append(f"💀 {enemy.name} is defeated!")
@@ -1224,6 +1221,7 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
 
         await send_action_log_sequence(
             interaction,
+            state,
             enemy,
             target,
             lines,
@@ -1246,13 +1244,13 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
     await create_phase_battle_message(interaction, state)
 
 
-def build_prebattle_embed(player: Unit, enemy: Unit) -> discord.Embed:
+def build_prebattle_embed(state: BattleState, player: Unit, enemy: Unit) -> discord.Embed:
     player_dmg = calc_damage(player, enemy)
-    player_hit = calc_hit(player, enemy)
+    player_hit = calc_hit(player, enemy, state)
     player_crit = calc_crit(player, enemy)
     enemy_can_counter = in_weapon_range(enemy, player)
     enemy_dmg = calc_damage(enemy, player) if enemy_can_counter else 0
-    enemy_hit = calc_hit(enemy, player) if enemy_can_counter else 0
+    enemy_hit = calc_hit(enemy, player, state) if enemy_can_counter else 0
     enemy_crit = calc_crit(enemy, player) if enemy_can_counter else 0
     player_after_hp = max(0, player.current_hp - enemy_dmg)
     enemy_after_hp = max(0, enemy.current_hp - player_dmg)
@@ -1337,6 +1335,7 @@ def build_critical_embed(event: CriticalEvent) -> discord.Embed:
 
 
 def build_battle_scene_embed(
+    state: BattleState,
     attacker: Unit,
     defender: Unit,
     *,
@@ -1355,7 +1354,7 @@ def build_battle_scene_embed(
             f"HP: **{player_hp}/{player_unit.stats.hp}** {hp_bar(player_hp, player_unit.stats.hp)}",
             "",
             f"Dmg: **{calc_damage(player_unit, enemy_unit)}**",
-            f"Hit: **{calc_hit(player_unit, enemy_unit)}%**",
+            f"Hit: **{calc_hit(player_unit, enemy_unit, state)}%**",
             f"Crit: **{calc_crit(player_unit, enemy_unit)}%**",
         ]),
         inline=True,
@@ -1367,7 +1366,7 @@ def build_battle_scene_embed(
             f"HP: **{enemy_hp}/{enemy_unit.stats.hp}** {hp_bar(enemy_hp, enemy_unit.stats.hp, fill_block='🟥')}",
             "",
             f"Dmg: **{calc_damage(enemy_unit, player_unit)}**",
-            f"Hit: **{calc_hit(enemy_unit, player_unit)}%**",
+            f"Hit: **{calc_hit(enemy_unit, player_unit, state)}%**",
             f"Crit: **{calc_crit(enemy_unit, player_unit)}%**",
         ]),
         inline=True,
@@ -1415,6 +1414,7 @@ class BattleSceneContinueView(discord.ui.View):
 
 async def send_action_log_sequence(
     interaction: discord.Interaction,
+    state: BattleState,
     attacker: Unit,
     defender: Unit,
     lines: List[str],
@@ -1433,6 +1433,7 @@ async def send_action_log_sequence(
         continue_view = BattleSceneContinueView()
         await interaction.channel.send(
             embed=build_battle_scene_embed(
+                state,
                 attacker,
                 defender,
                 player_hp_override=scene_player_hp,
@@ -1572,7 +1573,7 @@ class WeaponSelect(discord.ui.Select):
         player = self.state.players[self.player_name]
         player.equipped_index = int(self.values[0])
         enemy = self.state.enemies[self.enemy_name]
-        embed = build_prebattle_embed(player, enemy)
+        embed = build_prebattle_embed(self.state, player, enemy)
         await interaction.response.edit_message(embed=embed, view=PreBattleView(self.state, self.player_name, self.enemy_name, self.start_coord))
 
 
@@ -1600,7 +1601,7 @@ class AttackTargetSelect(discord.ui.Select):
         enemy = self.state.enemies[enemy_name]
         await interaction.response.edit_message(
             content=f"Selected target: **{enemy_name}**",
-            embed=build_prebattle_embed(player, enemy),
+            embed=build_prebattle_embed(self.state, player, enemy),
             view=PreBattleView(self.state, self.player_name, enemy_name, self.start_coord),
         )
 
@@ -1692,12 +1693,12 @@ class PreBattleView(discord.ui.View):
         player_pre_hp = player.current_hp
         enemy_pre_hp = enemy.current_hp
 
-        defender_down = resolve_combat_round(player, enemy, lines, critical_events)
+        defender_down = resolve_combat_round(player, enemy, self.state, lines, critical_events)
         if defender_down:
             lines.append(f"💀 {enemy.name} is defeated!")
             self.state.enemies.pop(enemy.name, None)
         elif in_weapon_range(enemy, player):
-            attacker_down = resolve_combat_round(enemy, player, lines, critical_events)
+            attacker_down = resolve_combat_round(enemy, player, self.state, lines, critical_events)
             if attacker_down:
                 lines.append(f"💀 {player.name} is defeated!")
                 self.state.players.pop(player.name, None)
@@ -1710,6 +1711,7 @@ class PreBattleView(discord.ui.View):
 
         await send_action_log_sequence(
             interaction,
+            self.state,
             player,
             enemy,
             lines,
