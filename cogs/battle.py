@@ -262,7 +262,12 @@ PLAYER_UNITS: List[Unit] = [
 CHARACTER_PROFILES: Dict[str, CharacterProfile] = {
     "Acheron": CharacterProfile(
         portrait_image_name="acheron.png",
-        critical_quotes=("I weep for the departed.",),
+        critical_quotes=(
+            "I weep for the departed.",
+            "Dusk's rain... it too shall fall.",
+            "On the still waters of oblivion.",
+            "Stream forth... the gleam of old blades.",
+        ),
         critical_image_name="acheron_critical.png",
         critical_image_url="https://cdn.discordapp.com/attachments/1478853056962625668/1487620310424486030/08340B99-085E-4DCC-AB8C-508D689FBEF1.jpg?ex=69c9cde0&is=69c87c60&hm=cf7bda108c7ec12888af7998a3eb2cdc76b7f6e3baaac14b521d97d374e3dd1a&",
     ),
@@ -1309,7 +1314,8 @@ def build_heal_forecast_embed(healer: Unit, ally: Unit) -> discord.Embed:
 
 
 def build_action_log_embed(lines: List[str], initiator: Unit) -> discord.Embed:
-    embed = discord.Embed(title="Action Log", description="\n".join(lines), color=0xD67F2C)
+    color = 0x1D82B6 if initiator.name in PLAYER_UNITS_BY_NAME else 0xC0392B
+    embed = discord.Embed(title="Action Log", description="\n".join(lines), color=color)
     initiator_image = resolve_asset_for_unit(initiator)
     if initiator_image is not None:
         filename = os.path.basename(initiator_image)
@@ -1444,32 +1450,74 @@ async def send_action_log_sequence(
         )
         await continue_view.wait_for_continue()
 
-    if not critical_events:
-        await send_embed_with_unit_asset(interaction.channel, build_action_log_embed(lines, attacker), attacker)
-        return
-
-    buffered: List[str] = []
-    for line in lines:
+    def detect_actor_name(line: str, fallback: str) -> str:
         if line.startswith("[CRITICAL_EVENT:") and line.endswith("]"):
-            if buffered:
-                await send_embed_with_unit_asset(interaction.channel, build_action_log_embed(buffered, attacker), attacker)
-                buffered = []
             marker = line.removeprefix("[CRITICAL_EVENT:").removesuffix("]")
             if marker.isdigit():
                 idx = int(marker)
                 if 0 <= idx < len(critical_events):
-                    event = critical_events[idx]
+                    return critical_events[idx].attacker.name
+            return fallback
+        for name in (attacker.name, defender.name):
+            if line.startswith(f"**{name}** initiates combat"):
+                return name
+            if line.startswith(f"{name} attacks ") or line.startswith(f"{name} hits "):
+                return name
+        if line.startswith("✨ Toxic Tome activates:"):
+            return "Framme"
+        return fallback
+
+    grouped_logs: List[Tuple[Unit, List[str]]] = []
+    current_actor_name = attacker.name
+    current_lines: List[str] = []
+
+    for line in lines:
+        actor_name = detect_actor_name(line, current_actor_name)
+        if actor_name != current_actor_name and current_lines:
+            actor_unit = state.players.get(current_actor_name) or state.enemies.get(current_actor_name)
+            if actor_unit is None:
+                actor_unit = attacker if current_actor_name == attacker.name else defender
+            grouped_logs.append((actor_unit, current_lines))
+            current_lines = []
+        current_actor_name = actor_name
+        current_lines.append(line)
+
+    if current_lines:
+        actor_unit = state.players.get(current_actor_name) or state.enemies.get(current_actor_name)
+        if actor_unit is None:
+            actor_unit = attacker if current_actor_name == attacker.name else defender
+        grouped_logs.append((actor_unit, current_lines))
+
+    for actor_unit, actor_lines in grouped_logs:
+        buffered: List[str] = []
+        for line in actor_lines:
+            if line.startswith("[CRITICAL_EVENT:") and line.endswith("]"):
+                if buffered:
                     await send_embed_with_unit_asset(
                         interaction.channel,
-                        build_critical_embed(event),
-                        event.attacker,
-                        use_critical_image=True,
+                        build_action_log_embed(buffered, actor_unit),
+                        actor_unit,
                     )
-            continue
-        buffered.append(line)
-
-    if buffered:
-        await send_embed_with_unit_asset(interaction.channel, build_action_log_embed(buffered, attacker), attacker)
+                    buffered = []
+                marker = line.removeprefix("[CRITICAL_EVENT:").removesuffix("]")
+                if marker.isdigit():
+                    idx = int(marker)
+                    if 0 <= idx < len(critical_events):
+                        event = critical_events[idx]
+                        await send_embed_with_unit_asset(
+                            interaction.channel,
+                            build_critical_embed(event),
+                            event.attacker,
+                            use_critical_image=True,
+                        )
+                continue
+            buffered.append(line)
+        if buffered:
+            await send_embed_with_unit_asset(
+                interaction.channel,
+                build_action_log_embed(buffered, actor_unit),
+                actor_unit,
+            )
 
 
 async def send_single_action_log(
@@ -1702,8 +1750,6 @@ class PreBattleView(discord.ui.View):
             if attacker_down:
                 lines.append(f"💀 {player.name} is defeated!")
                 self.state.players.pop(player.name, None)
-        else:
-            lines.append(f"{enemy.name} cannot counterattack (out of range).")
 
         apply_after_combat_skill(player, enemy, lines=lines)
         self.state.moved_this_turn.add(self.player_name)
