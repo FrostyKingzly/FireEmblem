@@ -1153,6 +1153,13 @@ class CriticalEvent:
     quote: str
 
 
+@dataclass(frozen=True)
+class DefeatEvent:
+    defeated: Unit
+    killer: Unit
+    defeated_is_player: bool
+
+
 def resolve_combat_round(
     attacker: Unit,
     defender: Unit,
@@ -1210,11 +1217,13 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
         target = min(targets, key=lambda player: (player.current_hp, manhattan_distance(enemy.coord, player.coord)))
         lines: List[str] = [f"**{enemy.name}** initiates combat against **{target.name}**!"]
         critical_events: List[CriticalEvent] = []
+        defeat_events: List[DefeatEvent] = []
         player_pre_hp = target.current_hp
         enemy_pre_hp = enemy.current_hp
         defender_down = resolve_combat_round(enemy, target, state, lines, critical_events)
         if defender_down:
             lines.append(f"💀 {target.name} is defeated!")
+            defeat_events.append(DefeatEvent(defeated=target, killer=enemy, defeated_is_player=True))
             state.players.pop(target.name, None)
             state.moved_this_turn.discard(target.name)
         elif in_weapon_range(target, enemy):
@@ -1222,6 +1231,7 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
             apply_after_combat_skill(target, enemy, lines=lines)
             if attacker_down:
                 lines.append(f"💀 {enemy.name} is defeated!")
+                defeat_events.append(DefeatEvent(defeated=enemy, killer=target, defeated_is_player=False))
                 state.enemies.pop(enemy.name, None)
 
         await send_action_log_sequence(
@@ -1231,6 +1241,7 @@ async def run_enemy_phase(interaction: discord.Interaction, state: BattleState, 
             target,
             lines,
             critical_events,
+            defeat_events,
             player_pre_hp=player_pre_hp,
             enemy_pre_hp=enemy_pre_hp,
         )
@@ -1340,6 +1351,26 @@ def build_critical_embed(event: CriticalEvent) -> discord.Embed:
     return embed
 
 
+def build_defeat_embed(event: DefeatEvent) -> discord.Embed:
+    if event.defeated_is_player:
+        embed = discord.Embed(
+            title="Unit Fallen",
+            description=f"{event.defeated.name} has fallen…",
+            color=0xC0392B,
+        )
+    else:
+        embed = discord.Embed(
+            title="Enemy Defeated",
+            description=f"{event.defeated.name} defeated by {event.killer.name}!",
+            color=0x2ECC71,
+        )
+    defeated_image = resolve_asset_for_unit(event.defeated)
+    if defeated_image is not None:
+        filename = os.path.basename(defeated_image)
+        embed.set_thumbnail(url=f"attachment://{filename}")
+    return embed
+
+
 def build_battle_scene_embed(
     state: BattleState,
     attacker: Unit,
@@ -1425,6 +1456,7 @@ async def send_action_log_sequence(
     defender: Unit,
     lines: List[str],
     critical_events: List[CriticalEvent],
+    defeat_events: List[DefeatEvent],
     *,
     player_pre_hp: Optional[int] = None,
     enemy_pre_hp: Optional[int] = None,
@@ -1518,6 +1550,13 @@ async def send_action_log_sequence(
                 build_action_log_embed(buffered, actor_unit),
                 actor_unit,
             )
+
+    for event in defeat_events:
+        await send_embed_with_unit_asset(
+            interaction.channel,
+            build_defeat_embed(event),
+            event.defeated,
+        )
 
 
 async def send_single_action_log(
@@ -1738,17 +1777,20 @@ class PreBattleView(discord.ui.View):
         enemy = self.state.enemies[self.enemy_name]
         lines: List[str] = [f"**{player.name}** initiates combat against **{enemy.name}**!"]
         critical_events: List[CriticalEvent] = []
+        defeat_events: List[DefeatEvent] = []
         player_pre_hp = player.current_hp
         enemy_pre_hp = enemy.current_hp
 
         defender_down = resolve_combat_round(player, enemy, self.state, lines, critical_events)
         if defender_down:
             lines.append(f"💀 {enemy.name} is defeated!")
+            defeat_events.append(DefeatEvent(defeated=enemy, killer=player, defeated_is_player=False))
             self.state.enemies.pop(enemy.name, None)
         elif in_weapon_range(enemy, player):
             attacker_down = resolve_combat_round(enemy, player, self.state, lines, critical_events)
             if attacker_down:
                 lines.append(f"💀 {player.name} is defeated!")
+                defeat_events.append(DefeatEvent(defeated=player, killer=enemy, defeated_is_player=True))
                 self.state.players.pop(player.name, None)
 
         apply_after_combat_skill(player, enemy, lines=lines)
@@ -1762,6 +1804,7 @@ class PreBattleView(discord.ui.View):
             enemy,
             lines,
             critical_events,
+            defeat_events,
             player_pre_hp=player_pre_hp,
             enemy_pre_hp=enemy_pre_hp,
         )
