@@ -474,7 +474,12 @@ def terrain_movement_cost(state: BattleState, coord: str) -> int:
 
 def movement_range(state: BattleState, unit: Unit) -> Set[str]:
     reachable: Set[str] = {unit.coord}
-    blocked = occupied_coords(state, ignore_player=unit.name, ignore_enemy=unit.name)
+    if unit.name in state.players:
+        ally_occupied = {player.coord for player in state.players.values() if player.name != unit.name}
+        enemy_occupied = {enemy.coord for enemy in state.enemies.values()}
+    else:
+        ally_occupied = {enemy.coord for enemy in state.enemies.values() if enemy.name != unit.name}
+        enemy_occupied = {player.coord for player in state.players.values()}
     best_cost: Dict[str, int] = {unit.coord: 0}
     queue: deque[Tuple[str, int]] = deque([(unit.coord, 0)])
 
@@ -485,7 +490,7 @@ def movement_range(state: BattleState, unit: Unit) -> Set[str]:
             if not in_bounds(nr, nc):
                 continue
             nxt = xy_to_coord(nr, nc)
-            if nxt in blocked or not is_infantry_passable(state, nxt):
+            if nxt in enemy_occupied or not is_infantry_passable(state, nxt):
                 continue
             new_cost = spent + terrain_movement_cost(state, nxt)
             if new_cost > unit.stats.mov:
@@ -494,8 +499,9 @@ def movement_range(state: BattleState, unit: Unit) -> Set[str]:
             if previous is not None and previous <= new_cost:
                 continue
             best_cost[nxt] = new_cost
-            reachable.add(nxt)
             queue.append((nxt, new_cost))
+            if nxt not in ally_occupied:
+                reachable.add(nxt)
 
     return reachable
 
@@ -1010,9 +1016,6 @@ def build_movement_preview_embed(
         [
             f"Preview tile: **{preview_coord}**",
             f"Movement used: **{steps_taken}/{movement_cap}**",
-            "Woods cost 2 movement and grant +30 avoid.",
-            "",
-            "🟦 Light blue = reachable movement tiles",
             action_color_text,
         ]
     )
@@ -1926,6 +1929,10 @@ class DirectionView(discord.ui.View):
 
         if not is_infantry_passable(self.state, candidate):
             await interaction.response.send_message("Infantry cannot move onto that terrain.", ephemeral=True)
+            return
+        blocking_enemies = {enemy.coord for enemy in self.state.enemies.values()}
+        if candidate in blocking_enemies:
+            await interaction.response.send_message("An enemy blocks that path.", ephemeral=True)
             return
 
         move_cost = terrain_movement_cost(self.state, candidate)
