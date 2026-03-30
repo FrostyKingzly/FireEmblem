@@ -323,12 +323,12 @@ PLAYER_UNITS_BY_NAME: Set[str] = {unit.name for unit in PLAYER_UNITS}
 ENEMY_UNITS_BY_NAME: Set[str] = {unit.name for unit in ENEMY_UNITS}
 
 BATTLE2_ENEMY_UNITS: List[Unit] = [
-    Unit("Sword Fighter 1", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "1G", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
-    Unit("Sword Fighter 2", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "3B", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
-    Unit("Sword Fighter 3", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "3J", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
-    Unit("Sword Fighter 4", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "6E", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
-    Unit("Sword Fighter 5", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "6G", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
-    Unit("Sword Fighter 6", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "9A", image_name="sword_fighter.png", behavior="aggressive", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 1", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "1G", image_name="sword_fighter.png", behavior="provoke", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 2", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "3B", image_name="sword_fighter.png", behavior="provoke", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 3", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "3J", image_name="sword_fighter.png", behavior="provoke", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 4", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "6E", image_name="sword_fighter.png", behavior="provoke", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 5", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "6G", image_name="sword_fighter.png", behavior="provoke", inventory=[WEAPONS["Iron Sword"]]),
+    Unit("Sword Fighter 6", 1, "Sword Fighter", CLASS_BASE_STATS["Sword Fighter"], "9A", image_name="sword_fighter.png", behavior="provoke", inventory=[WEAPONS["Iron Sword"]]),
 ]
 
 
